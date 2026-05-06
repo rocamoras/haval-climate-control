@@ -330,14 +330,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 String msg = String.format(Locale.getDefault(),
                         "AC desligado — interna %.1f°C ≤ set %.1f°C", insideTemp, setTemp);
                 Log.w(TAG, msg);
-                controlService.request("set", PROP_POWER_MODE, "0");
+                controlService.request("cmd.common.request.set", PROP_POWER_MODE, "0");
                 dataCache.put(PROP_POWER_MODE, "0");
                 logEntry = timeFormat.format(new Date()) + "  " + msg;
             } else if (insideTemp >= setTemp + 0.5f && !isAcOn) {
                 String msg = String.format(Locale.getDefault(),
                         "AC ligado — interna %.1f°C ≥ set %.1f°C", insideTemp, setTemp);
                 Log.w(TAG, msg);
-                controlService.request("set", PROP_POWER_MODE, "1");
+                controlService.request("cmd.common.request.set", PROP_POWER_MODE, "1");
                 dataCache.put(PROP_POWER_MODE, "1");
                 logEntry = timeFormat.format(new Date()) + "  " + msg;
             }
