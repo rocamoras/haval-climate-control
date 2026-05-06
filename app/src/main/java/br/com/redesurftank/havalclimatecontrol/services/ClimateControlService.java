@@ -309,7 +309,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                     + " set=" + dataCache.get(PROP_DRIVER_TEMP)
                     + " power=" + dataCache.get(PROP_POWER_MODE));
 
-            ClimateStateHolder.INSTANCE.setCommandCallback((key, value) -> {
+            ClimateStateHolder.INSTANCE.registerCommandCallback((key, value) -> {
                 backgroundHandler.post(() -> {
                     try {
                         controlService.request("cmd.common.request.set", key, value);
@@ -422,7 +422,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         } catch (Exception ignored) {}
         mainHandler.post(() -> {
             ClimateStateHolder.INSTANCE.updateVehicleData(false, null, null, null, null);
-            ClimateStateHolder.INSTANCE.setCommandCallback(null);
+            ClimateStateHolder.INSTANCE.registerCommandCallback(null);
         });
         Log.w(TAG, "Service destroyed");
         super.onDestroy();

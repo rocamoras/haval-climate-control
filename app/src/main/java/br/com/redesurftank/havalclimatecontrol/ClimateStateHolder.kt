@@ -30,7 +30,7 @@ object ClimateStateHolder {
     // Set by the service when connected; called by the UI to send a command
     @Volatile var commandCallback: ((String, String) -> Unit)? = null
 
-    fun setCommandCallback(cb: ((String, String) -> Unit)?) {
+    fun registerCommandCallback(cb: ((String, String) -> Unit)?) {
         commandCallback = cb
     }
 
