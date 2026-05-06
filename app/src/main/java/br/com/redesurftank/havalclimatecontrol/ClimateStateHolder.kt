@@ -31,7 +31,7 @@ object ClimateStateHolder {
         fun onCommand(key: String, value: String)
     }
 
-    @Volatile var commandCallback: CommandCallback? = null
+    @JvmField @Volatile var commandCallback: CommandCallback? = null
 
     fun sendCommand(key: String, value: String) {
         commandCallback?.onCommand(key, value)
