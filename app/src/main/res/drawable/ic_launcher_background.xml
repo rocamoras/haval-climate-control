@@ -4,9 +4,16 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    
-    <!-- Background color from Frame.svg -->
+
+    <!-- Fundo azul escuro frio -->
     <path
         android:pathData="M0,0h108v108h-108z"
-        android:fillColor="#13151A"/>
+        android:fillColor="#0D1B2A"/>
+
+    <!-- Círculo central suave -->
+    <path
+        android:pathData="M54,54m-46,0a46,46 0,1 1,92 0a46,46 0,1 1,-92 0"
+        android:fillColor="#0A2540"
+        android:strokeColor="#1A4A7A"
+        android:strokeWidth="1.5"/>
 </vector>

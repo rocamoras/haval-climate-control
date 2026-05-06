@@ -16,6 +16,7 @@ import android.content.pm.PackageManager;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 
@@ -36,6 +37,7 @@ import java.util.Objects;
 import java.util.regex.Pattern;
 
 import br.com.redesurftank.havalclimatecontrol.App;
+import br.com.redesurftank.havalclimatecontrol.ClimateStateHolder;
 import br.com.redesurftank.havalclimatecontrol.broadcastReceivers.RestartReceiver;
 import br.com.redesurftank.havalclimatecontrol.utils.IPTablesUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.TelnetClientWrapper;
@@ -47,17 +49,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private static final String TAG = "ClimateControlService";
 
-    public static final String ACTION_STATUS_UPDATE = "br.com.redesurftank.havalclimatecontrol.STATUS_UPDATE";
-    public static final String ACTION_REQUEST_STATUS = "br.com.redesurftank.havalclimatecontrol.REQUEST_STATUS";
-    public static final String EXTRA_INSIDE_TEMP   = "inside_temp";
-    public static final String EXTRA_DRIVER_TEMP   = "driver_temp";
-    public static final String EXTRA_POWER_MODE    = "power_mode";
-    public static final String EXTRA_AUTO_ENABLE   = "auto_enable";
-    public static final String EXTRA_SERVICE_READY = "service_ready";
-    public static final String EXTRA_ACTION_LOG    = "action_log";
-
     private static final String CHANNEL_ID         = "ClimateControlChannel";
-    private static final int NOTIFICATION_ID        = 1;
+    private static final int    NOTIFICATION_ID     = 1;
     private static final String PREFS_NAME          = "climate_control_prefs";
     private static final String KEY_SHIZUKU_LIB     = "shizuku_lib_location";
     private static final String KEY_INSTALLED_CHECK = "self_installation_integrity_check";
@@ -74,7 +67,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             Class<?> sm = Class.forName("android.os.ServiceManager");
             getServiceMethod = sm.getMethod("getService", String.class);
         } catch (ClassNotFoundException | NoSuchMethodException e) {
-            Log.w(TAG, "Failed to get android.os.ServiceManager.getService method", e);
+            Log.w(TAG, "Failed to get android.os.ServiceManager.getService", e);
         }
     }
 
@@ -87,22 +80,16 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     }
 
     private HandlerThread handlerThread;
-    private Handler backgroundHandler;
+    private Handler       backgroundHandler;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
     private boolean isShizukuInitialized = false;
-    private boolean isServiceRunning = false;
-    private boolean isVehicleConnected = false;
+    private boolean isServiceRunning     = false;
 
     private IIntelligentVehicleControlService controlService;
     private final Map<String, String> dataCache = new HashMap<>();
 
     private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
-
-    private final BroadcastReceiver requestStatusReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            sendStatusBroadcast(null);
-        }
-    };
 
     private final IListener vehicleDataListener = new IListener.Stub() {
         @Override
@@ -122,8 +109,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         handlerThread = new HandlerThread("ClimateControlThread");
         handlerThread.start();
         backgroundHandler = new Handler(handlerThread.getLooper());
-        ContextCompat.registerReceiver(this, requestStatusReceiver,
-                new IntentFilter(ACTION_REQUEST_STATUS), ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     @Override
@@ -281,7 +266,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 return false;
             }
 
-            IBinder controlBinder = new ShizukuBinderWrapper(getServiceBinder("com.beantechs.intelligentvehiclecontrol"));
+            IBinder controlBinder = new ShizukuBinderWrapper(
+                    getServiceBinder("com.beantechs.intelligentvehiclecontrol"));
             if (!controlBinder.pingBinder()) {
                 Log.e(TAG, "IntelligentVehicleControlService binder not alive");
                 return false;
@@ -292,7 +278,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             });
             controlService.registerDataChangedListener(getPackageName(), vehicleDataListener);
 
-            String[] keys = {PROP_AUTO_ENABLE, PROP_INSIDE_TEMP, PROP_DRIVER_TEMP, PROP_POWER_MODE};
+            String[] keys   = {PROP_AUTO_ENABLE, PROP_INSIDE_TEMP, PROP_DRIVER_TEMP, PROP_POWER_MODE};
             String[] values = controlService.fetchDatas(keys);
             if (values != null) {
                 for (int i = 0; i < keys.length && i < values.length; i++) {
@@ -300,16 +286,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 }
             }
 
-            isVehicleConnected = true;
-            Log.w(TAG, "Connected to vehicle service. Initial state:"
-                    + " auto=" + dataCache.get(PROP_AUTO_ENABLE)
+            Log.w(TAG, "Connected to vehicle service — auto=" + dataCache.get(PROP_AUTO_ENABLE)
                     + " inside=" + dataCache.get(PROP_INSIDE_TEMP)
                     + " set=" + dataCache.get(PROP_DRIVER_TEMP)
                     + " power=" + dataCache.get(PROP_POWER_MODE));
 
             Shizuku.addBinderDeadListener(this);
+            pushState(true, null);
             backgroundHandler.post(this::evaluateClimateControl);
-            sendStatusBroadcast(null);
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Error connecting to vehicle service: " + e.getMessage(), e);
@@ -319,25 +303,24 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private void evaluateClimateControl() {
         try {
-            String autoEnable  = dataCache.get(PROP_AUTO_ENABLE);
+            String autoEnable    = dataCache.get(PROP_AUTO_ENABLE);
             String insideTempStr = dataCache.get(PROP_INSIDE_TEMP);
             String driverTempStr = dataCache.get(PROP_DRIVER_TEMP);
             String powerModeStr  = dataCache.get(PROP_POWER_MODE);
 
             if (!"1".equals(autoEnable)) {
-                sendStatusBroadcast(null);
+                pushState(true, null);
                 return;
             }
-
             if (insideTempStr == null || driverTempStr == null || powerModeStr == null) {
-                sendStatusBroadcast(null);
+                pushState(true, null);
                 return;
             }
 
             float insideTemp = Float.parseFloat(insideTempStr);
             float setTemp    = Float.parseFloat(driverTempStr);
             boolean isAcOn   = "1".equals(powerModeStr);
-            String actionLog = null;
+            String logEntry  = null;
 
             if (insideTemp <= setTemp - 0.5f && isAcOn) {
                 String msg = String.format(Locale.getDefault(),
@@ -345,32 +328,35 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 Log.w(TAG, msg);
                 controlService.request("set", PROP_POWER_MODE, "0");
                 dataCache.put(PROP_POWER_MODE, "0");
-                actionLog = timeFormat.format(new Date()) + "  " + msg;
+                logEntry = timeFormat.format(new Date()) + "  " + msg;
             } else if (insideTemp >= setTemp + 0.5f && !isAcOn) {
                 String msg = String.format(Locale.getDefault(),
                         "AC ligado — interna %.1f°C ≥ set %.1f°C", insideTemp, setTemp);
                 Log.w(TAG, msg);
                 controlService.request("set", PROP_POWER_MODE, "1");
                 dataCache.put(PROP_POWER_MODE, "1");
-                actionLog = timeFormat.format(new Date()) + "  " + msg;
+                logEntry = timeFormat.format(new Date()) + "  " + msg;
             }
 
-            sendStatusBroadcast(actionLog);
+            pushState(true, logEntry);
         } catch (Exception e) {
             Log.e(TAG, "Error evaluating climate control: " + e.getMessage(), e);
         }
     }
 
-    private void sendStatusBroadcast(String actionLog) {
-        Intent intent = new Intent(ACTION_STATUS_UPDATE);
-        intent.setPackage(getPackageName());
-        intent.putExtra(EXTRA_SERVICE_READY, isVehicleConnected);
-        intent.putExtra(EXTRA_AUTO_ENABLE,   Objects.toString(dataCache.get(PROP_AUTO_ENABLE),  "--"));
-        intent.putExtra(EXTRA_INSIDE_TEMP,   Objects.toString(dataCache.get(PROP_INSIDE_TEMP),  "--"));
-        intent.putExtra(EXTRA_DRIVER_TEMP,   Objects.toString(dataCache.get(PROP_DRIVER_TEMP),  "--"));
-        intent.putExtra(EXTRA_POWER_MODE,    Objects.toString(dataCache.get(PROP_POWER_MODE),   "--"));
-        if (actionLog != null) intent.putExtra(EXTRA_ACTION_LOG, actionLog);
-        sendBroadcast(intent);
+    private void pushState(boolean connected, String logEntry) {
+        String inside = dataCache.get(PROP_INSIDE_TEMP);
+        String driver = dataCache.get(PROP_DRIVER_TEMP);
+        String power  = dataCache.get(PROP_POWER_MODE);
+        String auto   = dataCache.get(PROP_AUTO_ENABLE);
+        final String finalLog = logEntry;
+
+        mainHandler.post(() -> {
+            ClimateStateHolder.INSTANCE.updateVehicleData(connected, inside, driver, power, auto);
+            if (finalLog != null) {
+                ClimateStateHolder.INSTANCE.addLog(finalLog);
+            }
+        });
     }
 
     private void createNotificationChannel() {
@@ -386,14 +372,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     public void onDestroy() {
         if (handlerThread != null) handlerThread.quitSafely();
         isServiceRunning = false;
-        isVehicleConnected = false;
-        try { unregisterReceiver(requestStatusReceiver); } catch (Exception ignored) {}
         Shizuku.removeBinderReceivedListener(this::onShizukuBinderReceived);
         Shizuku.removeBinderDeadListener(this);
         try {
             if (controlService != null)
                 controlService.unRegisterDataChangedListener(getPackageName(), vehicleDataListener);
         } catch (Exception ignored) {}
+        mainHandler.post(() -> ClimateStateHolder.INSTANCE.updateVehicleData(
+                false, null, null, null, null));
         Log.w(TAG, "Service destroyed");
         super.onDestroy();
     }
@@ -408,10 +394,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private synchronized void restart() {
         isShizukuInitialized = false;
-        isServiceRunning = false;
-        isVehicleConnected = false;
+        isServiceRunning     = false;
         Shizuku.removeBinderReceivedListener(this::onShizukuBinderReceived);
         Shizuku.removeBinderDeadListener(this);
+        mainHandler.post(() -> ClimateStateHolder.INSTANCE.updateVehicleData(
+                false, null, null, null, null));
         Log.w(TAG, "Scheduling service restart...");
         Intent broadcastIntent = new Intent(this, RestartReceiver.class);
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
