@@ -1,0 +1,6 @@
+-keep class com.autolink.** { *; }
+-keepnames class com.autolink.**
+-keepclassmembers class com.autolink.** { *; }
+-keep class com.beantechs.** { *; }
+-keepnames class com.beantechs.**
+-keepclassmembers class com.beantechs.** { *; }
