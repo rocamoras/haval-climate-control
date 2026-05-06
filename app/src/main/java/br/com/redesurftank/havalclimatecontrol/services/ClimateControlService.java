@@ -60,6 +60,26 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String PROP_DRIVER_TEMP = "car.hvac.driver_temperature";
     private static final String PROP_POWER_MODE  = "car.hvac.power_mode";
 
+    private static final String PROP_AC_ENABLE         = "car.hvac.ac_enable";
+    private static final String PROP_FRONT_DEFROST     = "car.hvac.front_defrost_enable";
+    private static final String PROP_HEATING           = "car.hvac.heating_enable";
+    private static final String PROP_INTELLIGENT_SW    = "car.hvac.Intelligent_switch_enable";
+    private static final String PROP_LIMIT_ENABLE      = "car.hvac.setting.limit_enable";
+    private static final String PROP_FRONT_TEMP_RANGE  = "car.hvac.front_temperature_range";
+    private static final String PROP_INT_TEMP_RANGE    = "car.hvac.Intelligent_temperature_range";
+    private static final String PROP_PM25              = "car.hvac.pm2.5_value";
+    private static final String PROP_COMFORT_CURVE     = "car.hvac.setting.comfort_curve";
+
+    private static final String[] ALL_PROPS = {
+        "car.hvac.auto_enable", "car.basic.inside_temp",
+        "car.hvac.driver_temperature", "car.hvac.power_mode",
+        "car.hvac.ac_enable", "car.hvac.front_defrost_enable",
+        "car.hvac.heating_enable", "car.hvac.Intelligent_switch_enable",
+        "car.hvac.setting.limit_enable", "car.hvac.front_temperature_range",
+        "car.hvac.Intelligent_temperature_range", "car.hvac.pm2.5_value",
+        "car.hvac.setting.comfort_curve"
+    };
+
     private static Method getServiceMethod;
 
     static {
@@ -95,10 +115,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         @Override
         public void onDataChanged(String key, String value) {
             dataCache.put(key, value);
-            if (PROP_AUTO_ENABLE.equals(key) || PROP_INSIDE_TEMP.equals(key)
-                    || PROP_DRIVER_TEMP.equals(key) || PROP_POWER_MODE.equals(key)) {
-                backgroundHandler.post(ClimateControlService.this::evaluateClimateControl);
-            }
+            backgroundHandler.post(ClimateControlService.this::evaluateClimateControl);
         }
     };
 
@@ -277,16 +294,13 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 return false;
             }
             controlService = IIntelligentVehicleControlService.Stub.asInterface(controlBinder);
-            controlService.addListenerKey(getPackageName(), new String[]{
-                    PROP_AUTO_ENABLE, PROP_INSIDE_TEMP, PROP_DRIVER_TEMP, PROP_POWER_MODE
-            });
+            controlService.addListenerKey(getPackageName(), ALL_PROPS);
             controlService.registerDataChangedListener(getPackageName(), vehicleDataListener);
 
-            String[] keys   = {PROP_AUTO_ENABLE, PROP_INSIDE_TEMP, PROP_DRIVER_TEMP, PROP_POWER_MODE};
-            String[] values = controlService.fetchDatas(keys);
+            String[] values = controlService.fetchDatas(ALL_PROPS);
             if (values != null) {
-                for (int i = 0; i < keys.length && i < values.length; i++) {
-                    if (values[i] != null) dataCache.put(keys[i], values[i]);
+                for (int i = 0; i < ALL_PROPS.length && i < values.length; i++) {
+                    if (values[i] != null) dataCache.put(ALL_PROPS[i], values[i]);
                 }
             }
 
@@ -294,6 +308,19 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                     + " inside=" + dataCache.get(PROP_INSIDE_TEMP)
                     + " set=" + dataCache.get(PROP_DRIVER_TEMP)
                     + " power=" + dataCache.get(PROP_POWER_MODE));
+
+            ClimateStateHolder.INSTANCE.setCommandCallback((key, value) -> {
+                backgroundHandler.post(() -> {
+                    try {
+                        controlService.request("cmd.common.request.set", key, value);
+                        dataCache.put(key, value);
+                        Log.w(TAG, "Command sent: " + key + " = " + value);
+                        pushState(true, null);
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error sending command: " + e.getMessage(), e);
+                    }
+                });
+            });
 
             Shizuku.addBinderDeadListener(this);
             pushState(true, null);
@@ -349,14 +376,25 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     }
 
     private void pushState(boolean connected, String logEntry) {
-        String inside = dataCache.get(PROP_INSIDE_TEMP);
-        String driver = dataCache.get(PROP_DRIVER_TEMP);
-        String power  = dataCache.get(PROP_POWER_MODE);
-        String auto   = dataCache.get(PROP_AUTO_ENABLE);
+        String inside      = dataCache.get(PROP_INSIDE_TEMP);
+        String driver      = dataCache.get(PROP_DRIVER_TEMP);
+        String power       = dataCache.get(PROP_POWER_MODE);
+        String auto        = dataCache.get(PROP_AUTO_ENABLE);
+        String acEn        = dataCache.get(PROP_AC_ENABLE);
+        String frontDef    = dataCache.get(PROP_FRONT_DEFROST);
+        String heating     = dataCache.get(PROP_HEATING);
+        String intSw       = dataCache.get(PROP_INTELLIGENT_SW);
+        String limitEn     = dataCache.get(PROP_LIMIT_ENABLE);
+        String frontTRange = dataCache.get(PROP_FRONT_TEMP_RANGE);
+        String intTRange   = dataCache.get(PROP_INT_TEMP_RANGE);
+        String pm25        = dataCache.get(PROP_PM25);
+        String comfort     = dataCache.get(PROP_COMFORT_CURVE);
         final String finalLog = logEntry;
 
         mainHandler.post(() -> {
             ClimateStateHolder.INSTANCE.updateVehicleData(connected, inside, driver, power, auto);
+            ClimateStateHolder.INSTANCE.updateHvacExtras(acEn, frontDef, heating, intSw, limitEn,
+                    frontTRange, intTRange, pm25, comfort);
             if (finalLog != null) {
                 ClimateStateHolder.INSTANCE.addLog(finalLog);
             }
@@ -382,8 +420,10 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             if (controlService != null)
                 controlService.unRegisterDataChangedListener(getPackageName(), vehicleDataListener);
         } catch (Exception ignored) {}
-        mainHandler.post(() -> ClimateStateHolder.INSTANCE.updateVehicleData(
-                false, null, null, null, null));
+        mainHandler.post(() -> {
+            ClimateStateHolder.INSTANCE.updateVehicleData(false, null, null, null, null);
+            ClimateStateHolder.INSTANCE.setCommandCallback(null);
+        });
         Log.w(TAG, "Service destroyed");
         super.onDestroy();
     }

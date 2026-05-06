@@ -10,9 +10,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -63,22 +65,21 @@ fun MonitoringScreen() {
     val scope   = rememberCoroutineScope()
     val state   = ClimateStateHolder
 
-    // --- update state ---
-    var currentVersion  by remember { mutableStateOf("--") }
-    var isChecking      by remember { mutableStateOf(false) }
-    var isDownloading   by remember { mutableStateOf(false) }
+    var currentVersion   by remember { mutableStateOf("--") }
+    var isChecking       by remember { mutableStateOf(false) }
+    var isDownloading    by remember { mutableStateOf(false) }
     var downloadProgress by remember { mutableFloatStateOf(0f) }
-    var updateAvailable by remember { mutableStateOf(false) }
-    var latestVersion   by remember { mutableStateOf("") }
-    var downloadUrl     by remember { mutableStateOf("") }
-    var updateMessage   by remember { mutableStateOf("") }
-    var showMsgDialog   by remember { mutableStateOf(false) }
-    var showPermDialog  by remember { mutableStateOf(false) }
-    var downloadJob     by remember { mutableStateOf<Job?>(null) }
+    var updateAvailable  by remember { mutableStateOf(false) }
+    var latestVersion    by remember { mutableStateOf("") }
+    var downloadUrl      by remember { mutableStateOf("") }
+    var updateMessage    by remember { mutableStateOf("") }
+    var showMsgDialog    by remember { mutableStateOf(false) }
+    var showPermDialog   by remember { mutableStateOf(false) }
+    var downloadJob      by remember { mutableStateOf<Job?>(null) }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { /* after user grants install permission, re-trigger install */ }
+    ) { }
 
     LaunchedEffect(Unit) {
         try {
@@ -187,17 +188,13 @@ fun MonitoringScreen() {
         }
     }
 
-    // --- AC state ---
-    val isAuto   = state.autoEnable == "1"
-    val isAcOn   = state.powerMode  == "1"
+    val isAuto  = state.autoEnable == "1"
+    val isAcOn  = state.powerMode  == "1"
     val acColor   = if (isAcOn)  Color(0xFF00BCD4) else Color(0xFF757575)
     val autoColor = if (isAuto) Color(0xFF4CAF50) else Color(0xFFFF5722)
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+
         // Header
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -230,26 +227,52 @@ fun MonitoringScreen() {
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TempCard(modifier = Modifier.weight(1f), label = "Temperatura Interna", value = formatTemp(state.insideTemp), color = Color(0xFFFFB74D))
-            TempCard(modifier = Modifier.weight(1f), label = "Temperatura Setada", value = formatTemp(state.driverTemp), color = Color(0xFF64B5F6))
-        }
-
         Spacer(modifier = Modifier.height(12.dp))
 
+        // Temperature + status cards
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            TempCard(modifier = Modifier.weight(1f), label = "Temperatura Interna", value = formatTemp(state.insideTemp), color = Color(0xFFFFB74D))
+            TempCard(modifier = Modifier.weight(1f), label = "Temperatura Setada",  value = formatTemp(state.driverTemp),  color = Color(0xFF64B5F6))
             StatusCard(modifier = Modifier.weight(1f), label = "Modo AC",
                 value = if (state.autoEnable == "--") "--" else if (isAuto) "Automático" else "Manual", color = autoColor)
             StatusCard(modifier = Modifier.weight(1f), label = "Estado AC",
                 value = if (state.powerMode == "--") "--" else if (isAcOn) "Ligado" else "Desligado", color = acColor)
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        Text("Histórico de Ações", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
-        Spacer(modifier = Modifier.height(8.dp))
+        // Toggle controls
+        Text("Controles HVAC", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            HvacToggle("power_mode",           state.powerMode,          "car.hvac.power_mode")
+            HvacToggle("ac_enable",            state.acEnable,           "car.hvac.ac_enable")
+            HvacToggle("front_defrost",        state.frontDefrostEnable, "car.hvac.front_defrost_enable")
+            HvacToggle("heating_enable",       state.heatingEnable,      "car.hvac.heating_enable")
+            HvacToggle("intelligent_sw",       state.intelligentSwitch,  "car.hvac.Intelligent_switch_enable")
+            HvacToggle("limit_enable",         state.settingLimitEnable, "car.hvac.setting.limit_enable")
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Read-only sensors
+        Text("Sensores HVAC", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            HvacReadOnly(modifier = Modifier.weight(1f), label = "front_temp_range",  value = state.frontTempRange)
+            HvacReadOnly(modifier = Modifier.weight(1f), label = "intelligent_range", value = state.intelligentTempRange)
+            HvacReadOnly(modifier = Modifier.weight(1f), label = "pm2.5_value",       value = state.pm25Value)
+            HvacReadOnly(modifier = Modifier.weight(1f), label = "comfort_curve",     value = state.comfortCurve)
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Action log
+        Text("Histórico de Ações", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
+        Spacer(modifier = Modifier.height(6.dp))
 
         if (state.actionLog.isEmpty()) {
             Box(
@@ -280,17 +303,14 @@ fun MonitoringScreen() {
         }
     }
 
-    // --- Dialogs ---
-
+    // Dialogs
     if (showMsgDialog) {
         AlertDialog(
             onDismissRequest = { showMsgDialog = false },
             title = { Text("Atualização") },
             text = { Text(updateMessage) },
             confirmButton = { TextButton(onClick = { showMsgDialog = false }) { Text("OK") } },
-            containerColor = Color(0xFF1E1E1E),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFFCCCCCC)
+            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color(0xFFCCCCCC)
         )
     }
 
@@ -304,11 +324,7 @@ fun MonitoringScreen() {
                     if (isDownloading) {
                         Spacer(Modifier.height(4.dp))
                         Text("Baixando... ${(downloadProgress * 100).toInt()}%", fontSize = 13.sp, color = Color(0xFF4FC3F7))
-                        LinearProgressIndicator(
-                            progress = { downloadProgress },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = Color(0xFF4FC3F7)
-                        )
+                        LinearProgressIndicator(progress = { downloadProgress }, modifier = Modifier.fillMaxWidth(), color = Color(0xFF4FC3F7))
                     }
                 }
             },
@@ -320,9 +336,7 @@ fun MonitoringScreen() {
             dismissButton = {
                 TextButton(onClick = { updateAvailable = false; downloadJob?.cancel() }) { Text("Cancelar") }
             },
-            containerColor = Color(0xFF1E1E1E),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFFCCCCCC)
+            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color(0xFFCCCCCC)
         )
     }
 
@@ -341,10 +355,57 @@ fun MonitoringScreen() {
                 }) { Text("Abrir Configurações") }
             },
             dismissButton = { TextButton(onClick = { showPermDialog = false }) { Text("Cancelar") } },
-            containerColor = Color(0xFF1E1E1E),
-            titleContentColor = Color.White,
-            textContentColor = Color(0xFFCCCCCC)
+            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color(0xFFCCCCCC)
         )
+    }
+}
+
+@Composable
+fun HvacToggle(label: String, value: String, propKey: String) {
+    val isOn = value == "1"
+    val isUnknown = value == "--"
+    val bgColor = when {
+        isUnknown -> Color(0xFF2A2A2A)
+        isOn      -> Color(0xFF1B5E20)
+        else      -> Color(0xFF311B92)
+    }
+    val textColor = when {
+        isUnknown -> Color(0xFF888888)
+        isOn      -> Color(0xFF69F0AE)
+        else      -> Color(0xFFB39DDB)
+    }
+    Button(
+        onClick = {
+            if (!isUnknown) {
+                ClimateStateHolder.sendCommand(propKey, if (isOn) "0" else "1")
+            }
+        },
+        enabled = !isUnknown,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = bgColor,
+            disabledContainerColor = Color(0xFF2A2A2A)
+        ),
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(label, fontSize = 10.sp, color = Color(0xFFAAAAAA), textAlign = TextAlign.Center)
+            Text(
+                text = when (value) { "1" -> "ON" ; "0" -> "OFF" ; else -> "--" },
+                fontSize = 14.sp, fontWeight = FontWeight.Bold, color = textColor
+            )
+        }
+    }
+}
+
+@Composable
+fun HvacReadOnly(modifier: Modifier = Modifier, label: String, value: String) {
+    Card(modifier = modifier, colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)), shape = RoundedCornerShape(8.dp)) {
+        Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(label, fontSize = 10.sp, color = Color(0xFF888888), textAlign = TextAlign.Center)
+            Spacer(Modifier.height(4.dp))
+            Text(value, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFFFFFFF), textAlign = TextAlign.Center)
+        }
     }
 }
 
