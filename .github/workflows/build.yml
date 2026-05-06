@@ -24,25 +24,17 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Get version from tag
+      - name: Get version from build.gradle.kts
         id: get_version
         run: |
-          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "1.0.0")
-          VERSION=${VERSION#v}
+          VERSION=$(grep 'versionName = ' app/build.gradle.kts | sed 's/.*versionName = "\(.*\)".*/\1/')
+          BUILD_NUMBER=$(grep 'versionCode = ' app/build.gradle.kts | sed 's/.*versionCode = \([0-9]*\).*/\1/')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          BUILD_NUMBER=$(git rev-list --count HEAD)
           echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
 
       - name: Decode keystore
         run: |
           echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > app/release.keystore
-
-      - name: Update version in build.gradle.kts
-        run: |
-          VERSION="${{ steps.get_version.outputs.VERSION }}"
-          BUILD_NUMBER="${{ steps.get_version.outputs.BUILD_NUMBER }}"
-          sed -i "s/versionCode = [0-9]*/versionCode = $BUILD_NUMBER/" app/build.gradle.kts
-          sed -i "s/versionName = \".*\"/versionName = \"$VERSION\"/" app/build.gradle.kts
 
       - name: Build release APK
         env:
