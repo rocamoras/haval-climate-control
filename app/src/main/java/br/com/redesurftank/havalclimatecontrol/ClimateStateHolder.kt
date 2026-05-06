@@ -27,15 +27,14 @@ object ClimateStateHolder {
     var pm25Value             by mutableStateOf("--")
     var comfortCurve          by mutableStateOf("--")
 
-    // Set by the service when connected; called by the UI to send a command
-    @Volatile var commandCallback: ((String, String) -> Unit)? = null
-
-    fun registerCommandCallback(cb: ((String, String) -> Unit)?) {
-        commandCallback = cb
+    fun interface CommandCallback {
+        fun onCommand(key: String, value: String)
     }
 
+    @Volatile var commandCallback: CommandCallback? = null
+
     fun sendCommand(key: String, value: String) {
-        commandCallback?.invoke(key, value)
+        commandCallback?.onCommand(key, value)
     }
 
     fun updateVehicleData(

@@ -309,18 +309,17 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                     + " set=" + dataCache.get(PROP_DRIVER_TEMP)
                     + " power=" + dataCache.get(PROP_POWER_MODE));
 
-            ClimateStateHolder.INSTANCE.registerCommandCallback((key, value) -> {
-                backgroundHandler.post(() -> {
-                    try {
-                        controlService.request("cmd.common.request.set", key, value);
-                        dataCache.put(key, value);
-                        Log.w(TAG, "Command sent: " + key + " = " + value);
-                        pushState(true, null);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error sending command: " + e.getMessage(), e);
-                    }
-                });
-            });
+            ClimateStateHolder.INSTANCE.commandCallback = (key, value) ->
+                    backgroundHandler.post(() -> {
+                        try {
+                            controlService.request("cmd.common.request.set", key, value);
+                            dataCache.put(key, value);
+                            Log.w(TAG, "Command sent: " + key + " = " + value);
+                            pushState(true, null);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error sending command: " + e.getMessage(), e);
+                        }
+                    });
 
             Shizuku.addBinderDeadListener(this);
             pushState(true, null);
@@ -422,7 +421,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         } catch (Exception ignored) {}
         mainHandler.post(() -> {
             ClimateStateHolder.INSTANCE.updateVehicleData(false, null, null, null, null);
-            ClimateStateHolder.INSTANCE.registerCommandCallback(null);
+            ClimateStateHolder.INSTANCE.commandCallback = null;
         });
         Log.w(TAG, "Service destroyed");
         super.onDestroy();
