@@ -55,7 +55,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         }
     }
 
-    private static IBinder getSystemService(String serviceName) {
+    private static IBinder getServiceBinder(String serviceName) {
         try {
             return (IBinder) Objects.requireNonNull(getServiceMethod.invoke(null, serviceName));
         } catch (IllegalAccessException | InvocationTargetException | NullPointerException e) {
@@ -256,7 +256,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 return false;
             }
 
-            IBinder controlBinder = new ShizukuBinderWrapper(getSystemService("com.beantechs.intelligentvehiclecontrol"));
+            IBinder controlBinder = new ShizukuBinderWrapper(getServiceBinder("com.beantechs.intelligentvehiclecontrol"));
             if (!controlBinder.pingBinder()) {
                 Log.e(TAG, "IntelligentVehicleControlService binder not alive");
                 return false;
