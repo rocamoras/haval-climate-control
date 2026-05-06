@@ -132,19 +132,17 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             SharedPreferences prefs = App.getDeviceProtectedContext()
                     .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
 
-            if (!prefs.getBoolean(KEY_INSTALLED_CHECK, false)) {
-                try {
-                    var selfInfo = getApplicationContext().getPackageManager()
-                            .getApplicationInfo(getApplicationContext().getPackageName(), 0);
-                    if (selfInfo.uid > 10999) {
-                        Log.w(TAG, "UID > 10999, Shizuku cannot start automatically.");
-                        return START_NOT_STICKY;
-                    } else {
-                        prefs.edit().putBoolean(KEY_INSTALLED_CHECK, true).apply();
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, "Failed to get application info: " + e.getMessage(), e);
+            boolean needsBootstrap = true;
+            try {
+                var selfInfo = getApplicationContext().getPackageManager()
+                        .getApplicationInfo(getApplicationContext().getPackageName(), 0);
+                if (selfInfo.uid > 10999) {
+                    // Regular user app — Shizuku is started by app-tool; just wait for the binder
+                    Log.w(TAG, "UID > 10999, skipping Shizuku bootstrap, waiting for existing binder...");
+                    needsBootstrap = false;
                 }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to get application info: " + e.getMessage(), e);
             }
 
             final String cachedLibLocation = prefs.getString(KEY_SHIZUKU_LIB, "");
@@ -156,35 +154,41 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 }
             };
 
-            backgroundHandler.post(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        TelnetClientWrapper telnetClient = new TelnetClientWrapper();
-                        telnetClient.connect("127.0.0.1", 23);
-                        String filePath = cachedLibLocation;
-                        if (filePath.isEmpty()) {
-                            filePath = telnetClient.executeCommand("find /data/app -name libshizuku.so");
-                            if (filePath.isEmpty()) throw new RuntimeException("libshizuku.so not found");
-                            prefs.edit().putString(KEY_SHIZUKU_LIB, filePath).apply();
-                            Log.w(TAG, "libshizuku.so found at: " + filePath);
-                        }
+            if (!needsBootstrap) {
+                // Shizuku already running (started by app-tool); just attach to the existing binder
+                Shizuku.addBinderReceivedListenerSticky(this::onShizukuBinderReceived);
+                backgroundHandler.postDelayed(timeoutRunnable, 10000);
+            } else {
+                backgroundHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            TelnetClientWrapper telnetClient = new TelnetClientWrapper();
+                            telnetClient.connect("127.0.0.1", 23);
+                            String filePath = cachedLibLocation;
+                            if (filePath.isEmpty()) {
+                                filePath = telnetClient.executeCommand("find /data/app -name libshizuku.so");
+                                if (filePath.isEmpty()) throw new RuntimeException("libshizuku.so not found");
+                                prefs.edit().putString(KEY_SHIZUKU_LIB, filePath).apply();
+                                Log.w(TAG, "libshizuku.so found at: " + filePath);
+                            }
 
-                        String result = telnetClient.executeCommand(filePath);
-                        if (Pattern.compile("killed \\d+ \\(shizuku_server\\)").matcher(result).find()) {
-                            Log.w(TAG, "Old Shizuku process killed, waiting 5s...");
-                            Thread.sleep(5000);
-                        }
-                        telnetClient.disconnect();
+                            String result = telnetClient.executeCommand(filePath);
+                            if (Pattern.compile("killed \\d+ \\(shizuku_server\\)").matcher(result).find()) {
+                                Log.w(TAG, "Old Shizuku process killed, waiting 5s...");
+                                Thread.sleep(5000);
+                            }
+                            telnetClient.disconnect();
 
-                        Shizuku.addBinderReceivedListenerSticky(ClimateControlService.this::onShizukuBinderReceived);
-                        backgroundHandler.postDelayed(timeoutRunnable, 5000);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error bootstrapping Shizuku: " + e.getMessage(), e);
-                        backgroundHandler.postDelayed(this, 1000);
+                            Shizuku.addBinderReceivedListenerSticky(ClimateControlService.this::onShizukuBinderReceived);
+                            backgroundHandler.postDelayed(timeoutRunnable, 5000);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error bootstrapping Shizuku: " + e.getMessage(), e);
+                            backgroundHandler.postDelayed(this, 1000);
+                        }
                     }
-                }
-            });
+                });
+            }
 
         } catch (Exception e) {
             Log.e(TAG, "Error in onStartCommand: " + e.getMessage(), e);
