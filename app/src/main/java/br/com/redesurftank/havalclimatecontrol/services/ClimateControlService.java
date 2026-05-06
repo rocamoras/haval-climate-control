@@ -342,29 +342,30 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 pushState(true, null);
                 return;
             }
-            if (insideTempStr == null || driverTempStr == null || powerModeStr == null) {
+            String acEnableStr = dataCache.get(PROP_AC_ENABLE);
+            if (insideTempStr == null || driverTempStr == null || acEnableStr == null) {
                 pushState(true, null);
                 return;
             }
 
             float insideTemp = Float.parseFloat(insideTempStr);
             float setTemp    = Float.parseFloat(driverTempStr);
-            boolean isAcOn   = "1".equals(powerModeStr);
+            boolean isAcOn   = "1".equals(acEnableStr);
             String logEntry  = null;
 
             if (insideTemp <= setTemp - 0.5f && isAcOn) {
                 String msg = String.format(Locale.getDefault(),
                         "AC desligado — interna %.1f°C ≤ set %.1f°C", insideTemp, setTemp);
                 Log.w(TAG, msg);
-                controlService.request("cmd.common.request.set", PROP_POWER_MODE, "0");
-                dataCache.put(PROP_POWER_MODE, "0");
+                controlService.request("cmd.common.request.set", PROP_AC_ENABLE, "0");
+                dataCache.put(PROP_AC_ENABLE, "0");
                 logEntry = timeFormat.format(new Date()) + "  " + msg;
             } else if (insideTemp >= setTemp + 0.5f && !isAcOn) {
                 String msg = String.format(Locale.getDefault(),
                         "AC ligado — interna %.1f°C ≥ set %.1f°C", insideTemp, setTemp);
                 Log.w(TAG, msg);
-                controlService.request("cmd.common.request.set", PROP_POWER_MODE, "1");
-                dataCache.put(PROP_POWER_MODE, "1");
+                controlService.request("cmd.common.request.set", PROP_AC_ENABLE, "1");
+                dataCache.put(PROP_AC_ENABLE, "1");
                 logEntry = timeFormat.format(new Date()) + "  " + msg;
             }
 
