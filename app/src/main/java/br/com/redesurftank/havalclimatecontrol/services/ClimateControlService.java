@@ -74,6 +74,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String PROP_PM25              = "car.hvac.pm2.5_value";
     private static final String PROP_COMFORT_CURVE     = "car.hvac.setting.comfort_curve";
 
+    private static final String PROP_CHAIR_MEMORY_AUTO     = "car.comfort_setting.chair_memory.auto_enable";
+    private static final String PROP_ASS_MEMORY_SETTING    = "car.configure.ass_memory_setting";
+    private static final String PROP_CHAIR_MEM_POS_ACTION  = "car.comfort_setting.chair_mem_pos_set_action";
+    private static final String PROP_CHAIR_MEM_POS_FEEDBACK= "car.comfort_setting.chair_mem_pos_set_feedback";
+
     private static final String[] ALL_PROPS = {
         "car.hvac.auto_enable", "car.basic.inside_temp",
         "car.hvac.driver_temperature", "car.hvac.power_mode",
@@ -81,7 +86,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         "car.hvac.heating_enable", "car.hvac.Intelligent_switch_enable",
         "car.hvac.setting.limit_enable", "car.hvac.front_temperature_range",
         "car.hvac.Intelligent_temperature_range", "car.hvac.pm2.5_value",
-        "car.hvac.setting.comfort_curve"
+        "car.hvac.setting.comfort_curve",
+        "car.comfort_setting.chair_memory.auto_enable",
+        "car.configure.ass_memory_setting",
+        "car.comfort_setting.chair_mem_pos_set_action",
+        "car.comfort_setting.chair_mem_pos_set_feedback"
     };
 
     private static Method getServiceMethod;
@@ -345,6 +354,10 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             String driverTempStr = dataCache.get(PROP_DRIVER_TEMP);
             String powerModeStr  = dataCache.get(PROP_POWER_MODE);
 
+            if (!ClimateStateHolder.INSTANCE.getAutoControlEnabled()) {
+                pushState(true, null);
+                return;
+            }
             if (!"1".equals(autoEnable)) {
                 pushState(true, null);
                 return;
@@ -385,10 +398,10 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             String desiredCurve;
             if (insideTemp < 22f) {
                 desiredCurve = "0";
-            } else if (insideTemp <= 28f) {
+            } else if (insideTemp <= 24f) {
                 desiredCurve = "1";
             } else {
-                desiredCurve = "3";
+                desiredCurve = "2";
             }
             if (!desiredCurve.equals(currentCurve)) {
                 String msg = String.format(Locale.getDefault(),
@@ -421,10 +434,17 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         String comfort     = dataCache.get(PROP_COMFORT_CURVE);
         final String finalLog = logEntry;
 
+        String chairMemAuto    = dataCache.get(PROP_CHAIR_MEMORY_AUTO);
+        String assMemSetting   = dataCache.get(PROP_ASS_MEMORY_SETTING);
+        String chairMemAction  = dataCache.get(PROP_CHAIR_MEM_POS_ACTION);
+        String chairMemFeedback= dataCache.get(PROP_CHAIR_MEM_POS_FEEDBACK);
+
         mainHandler.post(() -> {
             ClimateStateHolder.INSTANCE.updateVehicleData(connected, inside, driver, power, auto);
             ClimateStateHolder.INSTANCE.updateHvacExtras(acEn, frontDef, heating, intSw, limitEn,
                     frontTRange, intTRange, pm25, comfort);
+            ClimateStateHolder.INSTANCE.updateSeatData(chairMemAuto, assMemSetting,
+                    chairMemAction, chairMemFeedback);
             if (finalLog != null) {
                 ClimateStateHolder.INSTANCE.addLog(finalLog);
             }

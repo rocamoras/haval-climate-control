@@ -7,12 +7,14 @@ import androidx.compose.runtime.setValue
 
 object ClimateStateHolder {
 
-    var vehicleConnected by mutableStateOf(false)
+    var vehicleConnected      by mutableStateOf(false)
+    var autoControlEnabled    by mutableStateOf(true)
     var autoEnable       by mutableStateOf("--")
     var insideTemp       by mutableStateOf("--")
     var driverTemp       by mutableStateOf("--")
     var powerMode        by mutableStateOf("--")
     val actionLog        = mutableStateListOf<String>()
+    val seatActionLog    = mutableStateListOf<String>()
 
     // Toggle properties
     var acEnable              by mutableStateOf("--")
@@ -26,6 +28,12 @@ object ClimateStateHolder {
     var intelligentTempRange  by mutableStateOf("--")
     var pm25Value             by mutableStateOf("--")
     var comfortCurve          by mutableStateOf("--")
+
+    // Seat properties
+    var chairMemoryAutoEnable  by mutableStateOf("--")
+    var assMemorySetting       by mutableStateOf("--")
+    var chairMemPosSetAction   by mutableStateOf("--")
+    var chairMemPosSetFeedback by mutableStateOf("--")
 
     fun interface CommandCallback {
         fun onCommand(key: String, value: String)
@@ -73,8 +81,25 @@ object ClimateStateHolder {
         comfortCurve         = comfort      ?: "--"
     }
 
+    fun updateSeatData(
+        chairMemAutoEnable : String?,
+        assMemSetting      : String?,
+        chairMemPosAction  : String?,
+        chairMemPosFeedback: String?
+    ) {
+        chairMemoryAutoEnable  = chairMemAutoEnable  ?: "--"
+        assMemorySetting       = assMemSetting       ?: "--"
+        chairMemPosSetAction   = chairMemPosAction   ?: "--"
+        chairMemPosSetFeedback = chairMemPosFeedback ?: "--"
+    }
+
     fun addLog(entry: String) {
         actionLog.add(0, entry)
         if (actionLog.size > 50) actionLog.removeAt(actionLog.lastIndex)
+    }
+
+    fun addSeatLog(entry: String) {
+        seatActionLog.add(0, entry)
+        if (seatActionLog.size > 50) seatActionLog.removeAt(seatActionLog.lastIndex)
     }
 }
