@@ -369,6 +369,24 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 logEntry = timeFormat.format(new Date()) + "  " + msg;
             }
 
+            String currentCurve = dataCache.get(PROP_COMFORT_CURVE);
+            String desiredCurve;
+            if (insideTemp < 22f) {
+                desiredCurve = "0";
+            } else if (insideTemp <= 28f) {
+                desiredCurve = "1";
+            } else {
+                desiredCurve = "3";
+            }
+            if (!desiredCurve.equals(currentCurve)) {
+                String msg = String.format(Locale.getDefault(),
+                        "Comfort curve → %s — interna %.1f°C", desiredCurve, insideTemp);
+                Log.w(TAG, msg);
+                controlService.request("cmd.common.request.set", PROP_COMFORT_CURVE, desiredCurve);
+                dataCache.put(PROP_COMFORT_CURVE, desiredCurve);
+                if (logEntry == null) logEntry = timeFormat.format(new Date()) + "  " + msg;
+            }
+
             pushState(true, logEntry);
         } catch (Exception e) {
             Log.e(TAG, "Error evaluating climate control: " + e.getMessage(), e);
