@@ -8,9 +8,11 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Handler;
@@ -23,6 +25,8 @@ import android.util.Log;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 
+import com.autolink.cluster.ClusterMsgData;
+import com.autolink.clusterservice.IClusterService;
 import com.beantechs.intelligentvehiclecontrol.IIntelligentVehicleControlService;
 import com.beantechs.intelligentvehiclecontrol.sdk.IListener;
 
@@ -107,6 +111,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private boolean isServiceRunning     = false;
 
     private IIntelligentVehicleControlService controlService;
+    private IClusterService clusterService;
+    private ServiceConnection clusterServiceConnection;
     private final Map<String, String> dataCache = new HashMap<>();
 
     private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
@@ -266,6 +272,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             return;
         }
 
+        connectToClusterService();
+
         IntentFilter filter = new IntentFilter("com.beantechs.intelligentvehiclecontrol.INIT_COMPLETED");
         ContextCompat.registerReceiver(App.getContext(), new BroadcastReceiver() {
             @Override
@@ -315,6 +323,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             controlService.request("cmd.common.request.set", key, value);
                             dataCache.put(key, value);
                             Log.w(TAG, "Command sent: " + key + " = " + value);
+                            if (PROP_AC_ENABLE.equals(key) || PROP_POWER_MODE.equals(key)) {
+                                notifyClusterAcChanged();
+                            }
                             pushState(true, null);
                         } catch (Exception e) {
                             Log.e(TAG, "Error sending command: " + e.getMessage(), e);
@@ -364,6 +375,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 Log.w(TAG, msg);
                 controlService.request("cmd.common.request.set", PROP_AC_ENABLE, "0");
                 dataCache.put(PROP_AC_ENABLE, "0");
+                notifyClusterAcChanged();
                 logEntry = timeFormat.format(new Date()) + "  " + msg;
             } else if (insideTemp >= setTemp + 0.5f && !isAcOn) {
                 String msg = String.format(Locale.getDefault(),
@@ -371,6 +383,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 Log.w(TAG, msg);
                 controlService.request("cmd.common.request.set", PROP_AC_ENABLE, "1");
                 dataCache.put(PROP_AC_ENABLE, "1");
+                notifyClusterAcChanged();
                 logEntry = timeFormat.format(new Date()) + "  " + msg;
             }
 
@@ -424,6 +437,41 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         });
     }
 
+    private void connectToClusterService() {
+        clusterServiceConnection = new ServiceConnection() {
+            @Override
+            public void onServiceConnected(ComponentName name, IBinder service) {
+                clusterService = IClusterService.Stub.asInterface(service);
+                Log.w(TAG, "ClusterService conectado");
+            }
+            @Override
+            public void onServiceDisconnected(ComponentName name) {
+                clusterService = null;
+                Log.w(TAG, "ClusterService desconectado");
+            }
+        };
+        Intent intent = new Intent();
+        intent.setComponent(new ComponentName(
+                "com.autolink.clusterservice",
+                "com.autolink.clusterservice.ClusterService"));
+        bindService(intent, clusterServiceConnection, Context.BIND_AUTO_CREATE);
+    }
+
+    private void notifyClusterAcChanged() {
+        if (clusterService == null) {
+            Log.w(TAG, "ClusterService não disponível — ignorando notificação");
+            return;
+        }
+        try {
+            ClusterMsgData msg = new ClusterMsgData();
+            msg.setIntValue(1);
+            clusterService.setMsg(133, msg);
+            Log.w(TAG, "Notificação AC enviada ao cluster (msgId=133, whichCard=1)");
+        } catch (Exception e) {
+            Log.e(TAG, "Erro ao notificar cluster: " + e.getMessage(), e);
+        }
+    }
+
     private void createNotificationChannel() {
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID, "Controle Climático", NotificationManager.IMPORTANCE_LOW);
@@ -443,6 +491,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             if (controlService != null)
                 controlService.unRegisterDataChangedListener(getPackageName(), vehicleDataListener);
         } catch (Exception ignored) {}
+        if (clusterServiceConnection != null) {
+            try { unbindService(clusterServiceConnection); } catch (Exception ignored) {}
+            clusterServiceConnection = null;
+            clusterService = null;
+        }
         mainHandler.post(() -> {
             ClimateStateHolder.INSTANCE.updateVehicleData(false, null, null, null, null);
             ClimateStateHolder.INSTANCE.commandCallback = null;
