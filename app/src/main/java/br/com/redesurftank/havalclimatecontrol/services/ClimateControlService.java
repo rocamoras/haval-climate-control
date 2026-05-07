@@ -40,6 +40,7 @@ import br.com.redesurftank.havalclimatecontrol.App;
 import br.com.redesurftank.havalclimatecontrol.ClimateStateHolder;
 import br.com.redesurftank.havalclimatecontrol.broadcastReceivers.RestartReceiver;
 import br.com.redesurftank.havalclimatecontrol.utils.IPTablesUtils;
+import br.com.redesurftank.havalclimatecontrol.utils.ShizukuUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.TelnetClientWrapper;
 import rikka.shizuku.Shizuku;
 import rikka.shizuku.ShizukuBinderWrapper;
@@ -54,6 +55,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String PREFS_NAME          = "climate_control_prefs";
     private static final String KEY_SHIZUKU_LIB     = "shizuku_lib_location";
     private static final String KEY_INSTALLED_CHECK = "self_installation_integrity_check";
+
+    private static final String HVAC_PACKAGE_NAME   = "com.beantechs.hvac";
+    private static final long   HVAC_RESUME_DELAY_MS = 300;
 
     private static final String PROP_AUTO_ENABLE = "car.hvac.auto_enable";
     private static final String PROP_INSIDE_TEMP = "car.basic.inside_temp";
@@ -108,6 +112,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private IIntelligentVehicleControlService controlService;
     private final Map<String, String> dataCache = new HashMap<>();
+
+    private boolean  isHvacSuspended    = false;
+    private Runnable resumeHvacRunnable = null;
 
     private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
 
@@ -312,7 +319,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             ClimateStateHolder.INSTANCE.commandCallback = (key, value) ->
                     backgroundHandler.post(() -> {
                         try {
-                            controlService.request("cmd.common.request.set", key, value);
+                            sendHvacCommand(key, value);
                             dataCache.put(key, value);
                             Log.w(TAG, "Command sent: " + key + " = " + value);
                             pushState(true, null);
@@ -362,14 +369,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 String msg = String.format(Locale.getDefault(),
                         "AC desligado — interna %.1f°C ≤ set %.1f°C", insideTemp, setTemp);
                 Log.w(TAG, msg);
-                controlService.request("cmd.common.request.set", PROP_AC_ENABLE, "0");
+                sendHvacCommand(PROP_AC_ENABLE, "0");
                 dataCache.put(PROP_AC_ENABLE, "0");
                 logEntry = timeFormat.format(new Date()) + "  " + msg;
             } else if (insideTemp >= setTemp + 0.5f && !isAcOn) {
                 String msg = String.format(Locale.getDefault(),
                         "AC ligado — interna %.1f°C ≥ set %.1f°C", insideTemp, setTemp);
                 Log.w(TAG, msg);
-                controlService.request("cmd.common.request.set", PROP_AC_ENABLE, "1");
+                sendHvacCommand(PROP_AC_ENABLE, "1");
                 dataCache.put(PROP_AC_ENABLE, "1");
                 logEntry = timeFormat.format(new Date()) + "  " + msg;
             }
@@ -387,7 +394,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 String msg = String.format(Locale.getDefault(),
                         "Comfort curve → %s — interna %.1f°C", desiredCurve, insideTemp);
                 Log.w(TAG, msg);
-                controlService.request("cmd.common.request.set", PROP_COMFORT_CURVE, desiredCurve);
+                sendHvacCommand(PROP_COMFORT_CURVE, desiredCurve);
                 dataCache.put(PROP_COMFORT_CURVE, desiredCurve);
                 if (logEntry == null) logEntry = timeFormat.format(new Date()) + "  " + msg;
             }
@@ -422,6 +429,56 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 ClimateStateHolder.INSTANCE.addLog(finalLog);
             }
         });
+    }
+
+    private void sendHvacCommand(String key, String value) throws Exception {
+        ensureHvacSuspended(key);
+        controlService.request("cmd.common.request.set", key, value);
+        scheduleHvacResumption();
+    }
+
+    private void ensureHvacSuspended(String triggerKey) {
+        if (resumeHvacRunnable != null) {
+            backgroundHandler.removeCallbacks(resumeHvacRunnable);
+            resumeHvacRunnable = null;
+        }
+        if (!isHvacSuspended) {
+            if (isHvacAppInForeground()) {
+                Log.w(TAG, "HVAC app em foreground, pulando suspensão para: " + triggerKey);
+                return;
+            }
+            Log.w(TAG, "Suspendendo HVAC app para: " + triggerKey);
+            ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "disable-user", "--user", "0", HVAC_PACKAGE_NAME});
+            ShizukuUtils.runCommandAndGetOutput(new String[]{"am", "force-stop", HVAC_PACKAGE_NAME});
+            isHvacSuspended = true;
+            SystemClock.sleep(150);
+        }
+    }
+
+    private boolean isHvacAppInForeground() {
+        try {
+            String output = ShizukuUtils.runCommandAndGetOutput(
+                    new String[]{"sh", "-c", "dumpsys activity activities | grep ResumedActivity"});
+            boolean isForeground = output != null && output.contains(HVAC_PACKAGE_NAME);
+            if (isForeground) Log.w(TAG, "HVAC app está em foreground");
+            return isForeground;
+        } catch (Exception e) {
+            Log.e(TAG, "Erro ao verificar foreground do HVAC", e);
+        }
+        return false;
+    }
+
+    private void scheduleHvacResumption() {
+        if (resumeHvacRunnable != null) {
+            backgroundHandler.removeCallbacks(resumeHvacRunnable);
+        }
+        resumeHvacRunnable = () -> {
+            Log.w(TAG, "Reabilitando HVAC app");
+            ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "enable", HVAC_PACKAGE_NAME});
+            isHvacSuspended = false;
+            resumeHvacRunnable = null;
+        };
+        backgroundHandler.postDelayed(resumeHvacRunnable, HVAC_RESUME_DELAY_MS);
     }
 
     private void createNotificationChannel() {
