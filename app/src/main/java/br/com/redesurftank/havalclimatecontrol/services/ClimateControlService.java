@@ -349,8 +349,13 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             }
 
             float insideTemp = Float.parseFloat(insideTempStr);
-            float setTemp    = Float.parseFloat(driverTempStr);
-            boolean isAcOn   = "1".equals(acEnableStr);
+            if (insideTemp == 87f) {
+                // Sensor offline — car is off, ignore reading
+                pushState(true, null);
+                return;
+            }
+            float setTemp  = Float.parseFloat(driverTempStr);
+            boolean isAcOn = "1".equals(acEnableStr);
             String logEntry  = null;
 
             if (insideTemp <= setTemp - 0.5f && isAcOn) {
