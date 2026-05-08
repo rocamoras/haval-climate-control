@@ -78,6 +78,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String PROP_ASS_MEMORY_SETTING    = "car.configure.ass_memory_setting";
     private static final String PROP_CHAIR_MEM_POS_ACTION  = "car.comfort_setting.chair_mem_pos_set_action";
     private static final String PROP_CHAIR_MEM_POS_FEEDBACK= "car.comfort_setting.chair_mem_pos_set_feedback";
+    private static final String PROP_DRIVER_SEAT_VENT      = "car.comfort_setting.driver_seat_ventilation_level";
+    private static final String PROP_PASSENGER_SEAT_VENT   = "car.comfort_setting.passenger_seat_ventilation_level";
 
     private static final String[] ALL_PROPS = {
         "car.hvac.auto_enable", "car.basic.inside_temp",
@@ -90,7 +92,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         "car.comfort_setting.chair_memory.auto_enable",
         "car.configure.ass_memory_setting",
         "car.comfort_setting.chair_mem_pos_set_action",
-        "car.comfort_setting.chair_mem_pos_set_feedback"
+        "car.comfort_setting.chair_mem_pos_set_feedback",
+        "car.comfort_setting.driver_seat_ventilation_level",
+        "car.comfort_setting.passenger_seat_ventilation_level"
     };
 
     private static Method getServiceMethod;
@@ -121,6 +125,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private IIntelligentVehicleControlService controlService;
     private final Map<String, String> dataCache = new HashMap<>();
+
+    private long acOffTimestamp = 0; // epoch ms do último desligamento do AC pelo controle automático
 
     private boolean  isHvacSuspended    = false;
     private Runnable resumeHvacRunnable = null;
@@ -349,67 +355,108 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private void evaluateClimateControl() {
         try {
-            String autoEnable    = dataCache.get(PROP_AUTO_ENABLE);
-            String insideTempStr = dataCache.get(PROP_INSIDE_TEMP);
-            String driverTempStr = dataCache.get(PROP_DRIVER_TEMP);
-            String powerModeStr  = dataCache.get(PROP_POWER_MODE);
-
             if (!ClimateStateHolder.INSTANCE.getAutoControlEnabled()) {
                 pushState(true, null);
                 return;
             }
-            if (!"1".equals(autoEnable)) {
-                pushState(true, null);
-                return;
-            }
-            String acEnableStr = dataCache.get(PROP_AC_ENABLE);
-            if (insideTempStr == null || driverTempStr == null || acEnableStr == null) {
-                pushState(true, null);
-                return;
-            }
 
+            String insideTempStr = dataCache.get(PROP_INSIDE_TEMP);
+            if (insideTempStr == null) {
+                pushState(true, null);
+                return;
+            }
             float insideTemp = Float.parseFloat(insideTempStr);
             if (insideTemp == 87f) {
                 // Sensor offline — car is off, ignore reading
                 pushState(true, null);
                 return;
             }
-            float setTemp  = Float.parseFloat(driverTempStr);
-            boolean isAcOn = "1".equals(acEnableStr);
-            String logEntry  = null;
 
-            if (insideTemp <= setTemp - 0.5f && isAcOn) {
-                String msg = String.format(Locale.getDefault(),
-                        "AC desligado — interna %.1f°C ≤ set %.1f°C", insideTemp, setTemp);
-                Log.w(TAG, msg);
-                sendHvacCommand(PROP_AC_ENABLE, "0");
-                dataCache.put(PROP_AC_ENABLE, "0");
-                logEntry = timeFormat.format(new Date()) + "  " + msg;
-            } else if (insideTemp >= setTemp + 0.5f && !isAcOn) {
-                String msg = String.format(Locale.getDefault(),
-                        "AC ligado — interna %.1f°C ≥ set %.1f°C", insideTemp, setTemp);
-                Log.w(TAG, msg);
-                sendHvacCommand(PROP_AC_ENABLE, "1");
-                dataCache.put(PROP_AC_ENABLE, "1");
-                logEntry = timeFormat.format(new Date()) + "  " + msg;
+            String logEntry = null;
+
+            // Bloco A — AC + comfort curve (requer modo auto do HVAC ligado)
+            String autoEnable = dataCache.get(PROP_AUTO_ENABLE);
+            if ("1".equals(autoEnable)) {
+                String driverTempStr = dataCache.get(PROP_DRIVER_TEMP);
+                String acEnableStr   = dataCache.get(PROP_AC_ENABLE);
+                if (driverTempStr != null && acEnableStr != null) {
+                    float setTemp  = Float.parseFloat(driverTempStr);
+                    boolean isAcOn = "1".equals(acEnableStr);
+
+                    boolean acOffOver1Min = acOffTimestamp > 0
+                            && (System.currentTimeMillis() - acOffTimestamp) > 60_000L;
+
+                    if (insideTemp <= setTemp - 0.5f && isAcOn) {
+                        String msg = String.format(Locale.getDefault(),
+                                "AC desligado — interna %.1f°C ≤ set %.1f°C", insideTemp, setTemp);
+                        Log.w(TAG, msg);
+                        sendHvacCommand(PROP_AC_ENABLE, "0");
+                        dataCache.put(PROP_AC_ENABLE, "0");
+                        acOffTimestamp = System.currentTimeMillis();
+                        logEntry = timeFormat.format(new Date()) + "  " + msg;
+                    } else if (!isAcOn && (insideTemp >= setTemp + 0.5f
+                            || (insideTemp >= setTemp && acOffOver1Min))) {
+                        String reason = (insideTemp >= setTemp + 0.5f)
+                                ? String.format(Locale.getDefault(), "interna %.1f°C ≥ set %.1f°C", insideTemp, setTemp)
+                                : String.format(Locale.getDefault(), "interna %.1f°C = set %.1f°C após >1 min", insideTemp, setTemp);
+                        String msg = "AC ligado — " + reason;
+                        Log.w(TAG, msg);
+                        sendHvacCommand(PROP_AC_ENABLE, "1");
+                        dataCache.put(PROP_AC_ENABLE, "1");
+                        acOffTimestamp = 0;
+                        logEntry = timeFormat.format(new Date()) + "  " + msg;
+                    }
+
+                    String currentCurve = dataCache.get(PROP_COMFORT_CURVE);
+                    String desiredCurve;
+                    if (insideTemp < 22f) {
+                        desiredCurve = "0";
+                    } else if (insideTemp <= 24f) {
+                        desiredCurve = "1";
+                    } else {
+                        desiredCurve = "2";
+                    }
+                    if (!desiredCurve.equals(currentCurve)) {
+                        String msg = String.format(Locale.getDefault(),
+                                "Comfort curve → %s — interna %.1f°C", desiredCurve, insideTemp);
+                        Log.w(TAG, msg);
+                        sendHvacCommand(PROP_COMFORT_CURVE, desiredCurve);
+                        dataCache.put(PROP_COMFORT_CURVE, desiredCurve);
+                        if (logEntry == null) logEntry = timeFormat.format(new Date()) + "  " + msg;
+                    }
+                }
             }
 
-            String currentCurve = dataCache.get(PROP_COMFORT_CURVE);
-            String desiredCurve;
-            if (insideTemp < 22f) {
-                desiredCurve = "0";
-            } else if (insideTemp <= 24f) {
-                desiredCurve = "1";
+            // Bloco B — Ventilação dos bancos (independente do modo auto do HVAC)
+            String desiredVentLevel;
+            if (insideTemp > 28f) {
+                desiredVentLevel = "3";
+            } else if (insideTemp > 24f) {
+                desiredVentLevel = "2";
+            } else if (insideTemp > 22f) {
+                desiredVentLevel = "1";
             } else {
-                desiredCurve = "2";
+                desiredVentLevel = "0";
             }
-            if (!desiredCurve.equals(currentCurve)) {
+
+            String currentDriverVent    = dataCache.get(PROP_DRIVER_SEAT_VENT);
+            String currentPassengerVent = dataCache.get(PROP_PASSENGER_SEAT_VENT);
+            boolean ventChanged = !desiredVentLevel.equals(currentDriverVent)
+                    || !desiredVentLevel.equals(currentPassengerVent);
+
+            if (!desiredVentLevel.equals(currentDriverVent)) {
+                sendHvacCommand(PROP_DRIVER_SEAT_VENT, desiredVentLevel);
+                dataCache.put(PROP_DRIVER_SEAT_VENT, desiredVentLevel);
+            }
+            if (!desiredVentLevel.equals(currentPassengerVent)) {
+                sendHvacCommand(PROP_PASSENGER_SEAT_VENT, desiredVentLevel);
+                dataCache.put(PROP_PASSENGER_SEAT_VENT, desiredVentLevel);
+            }
+            if (ventChanged && logEntry == null) {
                 String msg = String.format(Locale.getDefault(),
-                        "Comfort curve → %s — interna %.1f°C", desiredCurve, insideTemp);
+                        "Ventilação bancos → %s — interna %.1f°C", desiredVentLevel, insideTemp);
                 Log.w(TAG, msg);
-                sendHvacCommand(PROP_COMFORT_CURVE, desiredCurve);
-                dataCache.put(PROP_COMFORT_CURVE, desiredCurve);
-                if (logEntry == null) logEntry = timeFormat.format(new Date()) + "  " + msg;
+                logEntry = timeFormat.format(new Date()) + "  " + msg;
             }
 
             pushState(true, logEntry);
@@ -438,13 +485,15 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         String assMemSetting   = dataCache.get(PROP_ASS_MEMORY_SETTING);
         String chairMemAction  = dataCache.get(PROP_CHAIR_MEM_POS_ACTION);
         String chairMemFeedback= dataCache.get(PROP_CHAIR_MEM_POS_FEEDBACK);
+        String driverVent      = dataCache.get(PROP_DRIVER_SEAT_VENT);
+        String passengerVent   = dataCache.get(PROP_PASSENGER_SEAT_VENT);
 
         mainHandler.post(() -> {
             ClimateStateHolder.INSTANCE.updateVehicleData(connected, inside, driver, power, auto);
             ClimateStateHolder.INSTANCE.updateHvacExtras(acEn, frontDef, heating, intSw, limitEn,
                     frontTRange, intTRange, pm25, comfort);
             ClimateStateHolder.INSTANCE.updateSeatData(chairMemAuto, assMemSetting,
-                    chairMemAction, chairMemFeedback);
+                    chairMemAction, chairMemFeedback, driverVent, passengerVent);
             if (finalLog != null) {
                 ClimateStateHolder.INSTANCE.addLog(finalLog);
             }

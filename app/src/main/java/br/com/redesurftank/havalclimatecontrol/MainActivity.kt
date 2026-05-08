@@ -74,12 +74,14 @@ class MainActivity : ComponentActivity() {
 fun AppRoot() {
     var currentScreen by remember { mutableStateOf("main") }
     when (currentScreen) {
-        "main"    -> MainControlScreen(
-                         onNavigateToDebug    = { currentScreen = "debug" },
-                         onNavigateToAssento  = { currentScreen = "assento" }
-                     )
-        "debug"   -> DebugScreen(onNavigateBack = { currentScreen = "main" })
-        "assento" -> AssentoScreen(onNavigateBack = { currentScreen = "main" })
+        "main"       -> MainControlScreen(
+                            onNavigateToDebug      = { currentScreen = "debug" },
+                            onNavigateToAssento    = { currentScreen = "assento" },
+                            onNavigateToScreenInfo = { currentScreen = "screeninfo" }
+                        )
+        "debug"      -> DebugScreen(onNavigateBack = { currentScreen = "main" })
+        "assento"    -> AssentoScreen(onNavigateBack = { currentScreen = "main" })
+        "screeninfo" -> ScreenInfoScreen(onNavigateBack = { currentScreen = "main" })
     }
 }
 
@@ -88,7 +90,7 @@ fun AppRoot() {
 // ─────────────────────────────────────────────────────────────
 
 @Composable
-fun MainControlScreen(onNavigateToDebug: () -> Unit, onNavigateToAssento: () -> Unit) {
+fun MainControlScreen(onNavigateToDebug: () -> Unit, onNavigateToAssento: () -> Unit, onNavigateToScreenInfo: () -> Unit) {
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
     val state   = ClimateStateHolder
@@ -214,6 +216,20 @@ fun MainControlScreen(onNavigateToDebug: () -> Unit, onNavigateToAssento: () -> 
         "2"  -> Color(0xFFEF5350)
         else -> Color(0xFF888888)
     }
+    fun ventLabel(v: String) = when (v) {
+        "0"  -> "Off"
+        "1"  -> "Nível 1"
+        "2"  -> "Nível 2"
+        "3"  -> "Nível 3"
+        else -> "--"
+    }
+    fun ventColor(v: String) = when (v) {
+        "0"  -> Color(0xFF555555)
+        "1"  -> Color(0xFF64B5F6)
+        "2"  -> Color(0xFF29B6F6)
+        "3"  -> Color(0xFF00BCD4)
+        else -> Color(0xFF555555)
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(20.dp),
@@ -252,6 +268,11 @@ fun MainControlScreen(onNavigateToDebug: () -> Unit, onNavigateToAssento: () -> 
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                         colors         = ButtonDefaults.textButtonColors(contentColor = Color(0xFF555555))
                     ) { Text("Assento ›", fontSize = 11.sp) }
+                    TextButton(
+                        onClick        = onNavigateToScreenInfo,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        colors         = ButtonDefaults.textButtonColors(contentColor = Color(0xFF555555))
+                    ) { Text("Tela ›", fontSize = 11.sp) }
                 }
             }
         }
@@ -372,6 +393,24 @@ fun MainControlScreen(onNavigateToDebug: () -> Unit, onNavigateToAssento: () -> 
                 value          = if (state.comfortCurve == "--") "--" else comfortLabel,
                 valueColor     = comfortColor,
                 valueFontSize  = 20
+            )
+        }
+
+        // ── Info cards — row 3: ventilação dos bancos ────────────
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            InfoCard(
+                modifier      = Modifier.weight(1f),
+                label         = "Ventilação Motorista",
+                value         = ventLabel(state.driverSeatVentLevel),
+                valueColor    = ventColor(state.driverSeatVentLevel),
+                valueFontSize = 20
+            )
+            InfoCard(
+                modifier      = Modifier.weight(1f),
+                label         = "Ventilação Passageiro",
+                value         = ventLabel(state.passengerSeatVentLevel),
+                valueColor    = ventColor(state.passengerSeatVentLevel),
+                valueFontSize = 20
             )
         }
     }
@@ -769,6 +808,18 @@ fun AssentoScreen(onNavigateBack: () -> Unit) {
             propKey    = "car.comfort_setting.chair_mem_pos_set_feedback",
             value      = state.chairMemPosSetFeedback,
             sendValues = null   // read-only
+        ),
+        SeatProp(
+            label      = "driver_seat_ventilation_level",
+            propKey    = "car.comfort_setting.driver_seat_ventilation_level",
+            value      = state.driverSeatVentLevel,
+            sendValues = null   // read-only, controlado automaticamente
+        ),
+        SeatProp(
+            label      = "passenger_seat_ventilation_level",
+            propKey    = "car.comfort_setting.passenger_seat_ventilation_level",
+            value      = state.passengerSeatVentLevel,
+            sendValues = null
         )
     )
 
@@ -976,6 +1027,108 @@ fun SeatValueCard(modifier: Modifier = Modifier, label: String, value: String) {
                 color      = if (value == "--") Color(0xFF555555) else Color(0xFF64B5F6),
                 textAlign  = TextAlign.Center
             )
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Screen Info — diagnóstico de tamanho de tela
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+fun ScreenInfoScreen(onNavigateBack: () -> Unit) {
+    val context = LocalContext.current
+
+    val dm      = context.resources.displayMetrics
+    val widthPx = dm.widthPixels
+    val heightPx = dm.heightPixels
+    val densityDpi = dm.densityDpi
+    val density = dm.density
+    val xdpi    = dm.xdpi
+    val ydpi    = dm.ydpi
+    val widthDp  = (widthPx / density).toInt()
+    val heightDp = (heightPx / density).toInt()
+
+    val wm = context.getSystemService(android.content.Context.WINDOW_SERVICE)
+            as android.view.WindowManager
+    val realMetrics = android.util.DisplayMetrics()
+    @Suppress("DEPRECATION")
+    wm.defaultDisplay.getRealMetrics(realMetrics)
+    val realWidthPx  = realMetrics.widthPixels
+    val realHeightPx = realMetrics.heightPixels
+
+    val config       = context.resources.configuration
+    val smallestDp   = config.smallestScreenWidthDp
+    val screenWidthDp  = config.screenWidthDp
+    val screenHeightDp = config.screenHeightDp
+
+    data class InfoRow(val label: String, val value: String)
+
+    val rows = listOf(
+        InfoRow("Resolução (px)",            "$widthPx × $heightPx"),
+        InfoRow("Resolução real (px)",       "$realWidthPx × $realHeightPx"),
+        InfoRow("Tamanho (dp)",              "$widthDp × $heightDp dp"),
+        InfoRow("Config screenWidthDp",      "$screenWidthDp dp"),
+        InfoRow("Config screenHeightDp",     "$screenHeightDp dp"),
+        InfoRow("smallestScreenWidthDp",     "$smallestDp dp"),
+        InfoRow("Densidade (dpi)",           "$densityDpi dpi"),
+        InfoRow("Fator de escala",           String.format("%.2f", density)),
+        InfoRow("DPI físico X",              String.format("%.1f", xdpi)),
+        InfoRow("DPI físico Y",              String.format("%.1f", ydpi)),
+        InfoRow("Proporção (W/H)",           String.format("%.3f", widthPx.toFloat() / heightPx))
+    )
+
+    Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+
+        Row(
+            modifier              = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment     = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                IconButton(onClick = onNavigateBack, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Voltar",
+                        tint               = Color.White,
+                        modifier           = Modifier.size(20.dp)
+                    )
+                }
+                Column {
+                    Text("Info da Tela", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text("Métricas do display", fontSize = 11.sp, color = Color(0xFF666666))
+                }
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+            shape    = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                rows.forEach { row ->
+                    Row(
+                        modifier              = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment     = Alignment.CenterVertically
+                    ) {
+                        Text(row.label, fontSize = 13.sp, color = Color(0xFF888888))
+                        Text(
+                            row.value,
+                            fontSize   = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color      = Color(0xFF64B5F6),
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    if (row != rows.last()) {
+                        HorizontalDivider(color = Color(0xFF2A2A2A), thickness = 0.5.dp)
+                    }
+                }
+            }
         }
     }
 }

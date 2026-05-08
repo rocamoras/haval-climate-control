@@ -34,6 +34,8 @@ object ClimateStateHolder {
     var assMemorySetting       by mutableStateOf("--")
     var chairMemPosSetAction   by mutableStateOf("--")
     var chairMemPosSetFeedback by mutableStateOf("--")
+    var driverSeatVentLevel    by mutableStateOf("--")
+    var passengerSeatVentLevel by mutableStateOf("--")
 
     fun interface CommandCallback {
         fun onCommand(key: String, value: String)
@@ -85,12 +87,16 @@ object ClimateStateHolder {
         chairMemAutoEnable : String?,
         assMemSetting      : String?,
         chairMemPosAction  : String?,
-        chairMemPosFeedback: String?
+        chairMemPosFeedback: String?,
+        driverVent         : String?,
+        passengerVent      : String?
     ) {
         chairMemoryAutoEnable  = chairMemAutoEnable  ?: "--"
         assMemorySetting       = assMemSetting       ?: "--"
         chairMemPosSetAction   = chairMemPosAction   ?: "--"
         chairMemPosSetFeedback = chairMemPosFeedback ?: "--"
+        driverSeatVentLevel    = driverVent          ?: "--"
+        passengerSeatVentLevel = passengerVent       ?: "--"
     }
 
     fun addLog(entry: String) {
