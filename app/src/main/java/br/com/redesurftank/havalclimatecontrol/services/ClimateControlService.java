@@ -605,7 +605,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 controlService.unRegisterDataChangedListener(getPackageName(), vehicleDataListener);
         } catch (Exception ignored) {}
         mainHandler.post(() -> {
-            ClimateStateHolder.INSTANCE.updateVehicleData(false, null, null, null, null);
+            ClimateStateHolder.INSTANCE.updateVehicleData(false, null, null, null, null, null);
             ClimateStateHolder.INSTANCE.commandCallback = null;
         });
         Log.w(TAG, "Service destroyed");
@@ -626,7 +626,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         Shizuku.removeBinderReceivedListener(this::onShizukuBinderReceived);
         Shizuku.removeBinderDeadListener(this);
         mainHandler.post(() -> ClimateStateHolder.INSTANCE.updateVehicleData(
-                false, null, null, null, null));
+                false, null, null, null, null, null));
         Log.w(TAG, "Scheduling service restart...");
         Intent broadcastIntent = new Intent(this, RestartReceiver.class);
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
