@@ -203,7 +203,7 @@ fun MainControlScreen(onNavigateToDebug: () -> Unit, onNavigateToAssento: () -> 
     }
 
     // Derived state
-    val isAcOn       = state.powerMode == "1"
+    val isAcOn       = state.acEnable == "1"
     val comfortLabel = when (state.comfortCurve) {
         "0"  -> "Suave"
         "1"  -> "Normal"
@@ -362,9 +362,9 @@ fun MainControlScreen(onNavigateToDebug: () -> Unit, onNavigateToAssento: () -> 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             InfoCard(
                 modifier    = Modifier.weight(1f),
-                label       = "Temp. Externa",
-                value       = formatTemp(state.outsideTemp),
-                valueColor  = Color(0xFFEF9A9A)
+                label       = "Temp. Setada",
+                value       = formatTemp(state.driverTemp),
+                valueColor  = Color(0xFF64B5F6)
             )
             InfoCard(
                 modifier    = Modifier.weight(1f),
@@ -374,9 +374,9 @@ fun MainControlScreen(onNavigateToDebug: () -> Unit, onNavigateToAssento: () -> 
             )
             InfoCard(
                 modifier    = Modifier.weight(1f),
-                label       = "Temp. Setada",
-                value       = formatTemp(state.driverTemp),
-                valueColor  = Color(0xFF64B5F6)
+                label       = "Temp. Externa",
+                value       = formatTemp(state.outsideTemp),
+                valueColor  = Color(0xFFEF9A9A)
             )
         }
 
@@ -385,7 +385,7 @@ fun MainControlScreen(onNavigateToDebug: () -> Unit, onNavigateToAssento: () -> 
             InfoCard(
                 modifier       = Modifier.weight(1f),
                 label          = "Estado do AC",
-                value          = when (state.powerMode) {
+                value          = when (state.acEnable) {
                     "1"  -> "Ligado"
                     "0"  -> "Desligado"
                     else -> "--"

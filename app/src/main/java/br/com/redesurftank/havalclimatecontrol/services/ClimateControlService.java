@@ -465,9 +465,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             String desiredVentLevel;
             if (insideTemp > 28f) {
                 desiredVentLevel = "3";
-            } else if (insideTemp > 24f) {
+            } else if (insideTemp > 26f) {
                 desiredVentLevel = "2";
-            } else if (insideTemp > 22f) {
+            } else if (insideTemp > 24f) {
                 desiredVentLevel = "1";
             } else {
                 desiredVentLevel = "0";

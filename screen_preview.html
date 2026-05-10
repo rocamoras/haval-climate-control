@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Preview — Controle Automático de Conforto</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Roboto', sans-serif; }
+  body { background: #0a0a0a; padding: 32px 24px; }
+
+  /* ── Tab bar ── */
+  .tab-bar { display: flex; gap: 0; border-bottom: 1px solid #222; margin-bottom: 28px; }
+  .tab { padding: 10px 20px; font-size: 13px; color: #555; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; user-select: none; }
+  .tab:hover { color: #888; }
+  .tab.active { color: #64B5F6; border-bottom-color: #64B5F6; }
+
+  /* ── Screen container ── */
+  .screen { display: none; gap: 28px; flex-wrap: wrap; align-items: flex-start; }
+  .screen.active { display: flex; }
+
+  /* ── Phone shell ── */
+  .phone {
+    width: 360px; background: #121212; border-radius: 32px;
+    border: 2px solid #2a2a2a; padding: 24px 20px 32px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6); flex-shrink: 0;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .phone.tall { max-height: 720px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #333 transparent; }
+  .phone-label { color: #555; font-size: 11px; text-align: center; letter-spacing: 1px; text-transform: uppercase; }
+
+  /* ── Header ── */
+  .header { display: flex; justify-content: space-between; align-items: flex-start; }
+  .title-block .title { font-size: 19px; font-weight: 700; color: #fff; line-height: 1.35; }
+  .title-block .version { font-size: 11px; color: #555; margin-top: 2px; }
+  .header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #4CAF50; box-shadow: 0 0 6px #4CAF5088; }
+  .dot.off { background: #555; box-shadow: none; }
+  .nav-btns { display: flex; }
+  .nav-btn { font-size: 11px; color: #555; background: none; border: none; cursor: pointer; padding: 2px 6px; }
+
+  /* ── Update banner ── */
+  .update-banner { background: #1565C0; border-radius: 12px; padding: 13px 16px; display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .update-banner span { color: #fff; font-size: 14px; font-weight: 600; }
+
+  /* ── Toggle card ── */
+  .toggle-card { background: #0D2B0D; border-radius: 16px; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #1a4a1a; }
+  .toggle-card.off { background: #1E1E1E; border-color: #2a2a2a; }
+  .toggle-card .lbl { font-size: 16px; font-weight: 600; color: #fff; }
+  .toggle-card .sub { font-size: 12px; color: #69F0AE; margin-top: 3px; }
+  .toggle-card.off .sub { color: #888; }
+  .switch { position: relative; width: 51px; height: 30px; flex-shrink: 0; }
+  .slider { position: absolute; inset: 0; background: #4CAF50; border-radius: 30px; }
+  .slider::before { content: ""; position: absolute; width: 22px; height: 22px; border-radius: 50%; background: #fff; top: 4px; left: 25px; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+  .switch.off .slider { background: #333; }
+  .switch.off .slider::before { left: 4px; }
+
+  /* ── Info cards ── */
+  .cards-row { display: flex; gap: 12px; }
+  .info-card { flex: 1; background: #1E1E1E; border-radius: 12px; padding: 14px 10px; text-align: center; }
+  .info-card .card-label { font-size: 11px; color: #888; margin-bottom: 8px; }
+  .info-card .card-value { font-size: 28px; font-weight: 700; }
+  .info-card .card-value.sm { font-size: 20px; }
+
+  /* colors */
+  .orange { color: #FFB74D; } .blue { color: #64B5F6; } .cyan { color: #00BCD4; }
+  .grey { color: #757575; } .green { color: #81C784; } .amber { color: #FFB74D; }
+  .red { color: #EF5350; } .pink { color: #EF9A9A; } .blue2 { color: #29B6F6; }
+  .muted { color: #555; }
+
+  /* ── Back header ── */
+  .back-header { display: flex; align-items: center; gap: 8px; }
+  .back-btn { width: 32px; height: 32px; border-radius: 50%; background: none; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .back-btn svg { fill: #fff; }
+  .back-header h2 { font-size: 19px; font-weight: 700; color: #fff; }
+  .back-header p { font-size: 11px; color: #666; }
+
+  /* ── Section title ── */
+  .section-title { font-size: 13px; font-weight: 600; color: #aaa; }
+
+  /* ── Log box ── */
+  .log-box { background: #1A1A1A; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 11px; color: #888; display: flex; flex-direction: column; gap: 6px; }
+  .log-entry.ok { color: #69F0AE; }
+
+  /* ── HVAC toggles ── */
+  .hvac-list { display: flex; flex-direction: column; gap: 8px; }
+  .hvac-toggle { background: #1E1E1E; border-radius: 12px; padding: 12px 14px; display: flex; justify-content: space-between; align-items: center; }
+  .hvac-toggle .ht-lbl { font-size: 10px; color: #888; font-family: monospace; margin-bottom: 4px; }
+  .hvac-toggle .ht-val { font-size: 16px; font-weight: 700; color: #64B5F6; font-family: monospace; }
+  .mini-btns { display: flex; gap: 4px; }
+  .mini-btn { padding: 3px 10px; border-radius: 5px; font-size: 11px; font-weight: 600; border: 1px solid #444; background: none; color: #888; cursor: pointer; }
+  .mini-btn.on { background: #1b3a1b; border-color: #4CAF50; color: #4CAF50; }
+
+  /* ── Seat cards ── */
+  .seat-card { background: #1E1E1E; border-radius: 12px; padding: 14px; }
+  .seat-card.active-card { background: #0D2B0D; border: 1px solid #1a4a1a; }
+  .seat-card .sc-lbl { font-size: 10px; color: #888; font-family: monospace; margin-bottom: 6px; }
+  .seat-card .sc-val { font-size: 20px; font-weight: 700; color: #64B5F6; }
+  .seat-card.active-card .sc-val { color: #69F0AE; }
+  .sc-row { display: flex; justify-content: space-between; align-items: center; }
+  .sc-btns { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .sc-btn { padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; border: 1px solid #444; background: none; color: #888; cursor: pointer; }
+  .sc-btn.active { background: #1b3a1b; border-color: #4CAF50; color: #4CAF50; }
+  .ro-badge { font-size: 10px; color: #555; background: #2a2a2a; padding: 2px 6px; border-radius: 4px; }
+
+  /* ── Screen info ── */
+  .info-list { background: #1E1E1E; border-radius: 16px; padding: 4px 16px; }
+  .info-list-row { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border-bottom: 0.5px solid #2a2a2a; }
+  .info-list-row:last-child { border-bottom: none; }
+  .info-list-row .il-lbl { font-size: 13px; color: #888; }
+  .info-list-row .il-val { font-size: 14px; font-weight: 600; color: #64B5F6; font-family: monospace; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════ TAB BAR ══════════════════════ -->
+<div class="tab-bar">
+  <div class="tab active" onclick="show('main')">Principal</div>
+  <div class="tab" onclick="show('hvac')">HVAC Debug</div>
+  <div class="tab" onclick="show('assento')">Assento</div>
+  <div class="tab" onclick="show('screeninfo')">Info da Tela</div>
+</div>
+
+<!-- ══════════════════════ PRINCIPAL ══════════════════════ -->
+<div id="main" class="screen active">
+
+  <!-- Estado: Ativo / Conectado / Quente -->
+  <div>
+    <div class="phone-label" style="margin-bottom:10px">Tela Principal · Ativo · Quente</div>
+    <div class="phone">
+      <div class="header">
+        <div class="title-block">
+          <div class="title">Controle Automático<br>de Conforto</div>
+          <div class="version">v1.5.0</div>
+        </div>
+        <div class="header-right">
+          <div class="dot"></div>
+          <div class="nav-btns">
+            <button class="nav-btn">HVAC ›</button>
+            <button class="nav-btn">Assento ›</button>
+            <button class="nav-btn">Tela ›</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="toggle-card">
+        <div>
+          <div class="lbl">Controle Automático</div>
+          <div class="sub">Ativo — monitorando temperatura</div>
+        </div>
+        <div class="switch"><div class="slider"></div></div>
+      </div>
+
+      <!-- Row 1: Setada | Interna | Externa -->
+      <div class="cards-row">
+        <div class="info-card">
+          <div class="card-label">Temp. Setada</div>
+          <div class="card-value blue">24.0°C</div>
+        </div>
+        <div class="info-card">
+          <div class="card-label">Temp. Interna</div>
+          <div class="card-value orange">27.3°C</div>
+        </div>
+        <div class="info-card">
+          <div class="card-label">Temp. Externa</div>
+          <div class="card-value sm pink">31.0°C</div>
+        </div>
+      </div>
+
+      <!-- Row 2: AC | Conforto -->
+      <div class="cards-row">
+        <div class="info-card">
+          <div class="card-label">Estado do AC</div>
+          <div class="card-value sm cyan">Ligado</div>
+        </div>
+        <div class="info-card">
+          <div class="card-label">Modo Conforto</div>
+          <div class="card-value sm amber">Normal</div>
+        </div>
+      </div>
+
+      <!-- Row 3: Ventilação bancos -->
+      <div class="cards-row">
+        <div class="info-card">
+          <div class="card-label">Ventilação Motorista</div>
+          <div class="card-value sm blue2">Nível 2</div>
+        </div>
+        <div class="info-card">
+          <div class="card-label">Ventilação Passageiro</div>
+          <div class="card-value sm blue2">Nível 2</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Estado: Ativo / Conectado / Frio -->
+  <div>
+    <div class="phone-label" style="margin-bottom:10px">Tela Principal · Ativo · Frio</div>
+    <div class="phone">
+      <div class="header">
+        <div class="title-block">
+          <div class="title">Controle Automático<br>de Conforto</div>
+          <div class="version">v1.5.0</div>
+        </div>
+        <div class="header-right">
+          <div class="dot"></div>
+          <div class="nav-btns">
+            <button class="nav-btn">HVAC ›</button>
+            <button class="nav-btn">Assento ›</button>
+            <button class="nav-btn">Tela ›</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="toggle-card">
+        <div>
+          <div class="lbl">Controle Automático</div>
+          <div class="sub">Ativo — monitorando temperatura</div>
+        </div>
+        <div class="switch"><div class="slider"></div></div>
+      </div>
+
+      <div class="cards-row">
+        <div class="info-card">
+          <div class="card-label">Temp. Setada</div>
+          <div class="card-value blue">24.0°C</div>
+        </div>
+        <div class="info-card">
+          <div class="card-label">Temp. Interna</div>
+          <div class="card-value orange">22.0°C</div>
+        </div>
+        <div class="info-card">
+          <div class="card-label">Temp. Externa</div>
+          <div class="card-value sm pink">18.0°C</div>
+        </div>
+      </div>
+
+      <div class="cards-row">
+        <div class="info-card">
+          <div class="card-label">Estado do AC</div>
+          <div class="card-value sm grey">Desligado</div>
+        </div>
+        <div class="info-card">
+          <div class="card-label">Modo Conforto</div>
+          <div class="card-value sm green">Suave</div>
+        </div>
+      </div>
+
+      <div class="cards-row">
+        <div class="info-card">
+          <div class="card-label">Ventilação Motorista</div>
+          <div class="card-value sm muted">Off</div>
+        </div>
+        <div class="info-card">
+          <div class="card-label">Ventilação Passageiro</div>
+          <div class="card-value sm muted">Off</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Estado: Inativo / Desconectado -->
+  <div>
+    <div class="phone-label" style="margin-bottom:10px">Tela Principal · Inativo</div>
+    <div class="phone">
+      <div class="header">
+        <div class="title-block">
+          <div class="title">Controle Automático<br>de Conforto</div>
+          <div class="version">v1.5.0</div>
+        </div>
+        <div class="header-right">
+          <div class="dot off"></div>
+          <div class="nav-btns">
+            <button class="nav-btn">HVAC ›</button>
+            <button class="nav-btn">Assento ›</button>
+            <button class="nav-btn">Tela ›</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="toggle-card off">
+        <div>
+          <div class="lbl">Controle Automático</div>
+          <div class="sub">Inativo</div>
+        </div>
+        <div class="switch off"><div class="slider"></div></div>
+      </div>
+
+      <div class="cards-row">
+        <div class="info-card"><div class="card-label">Temp. Setada</div><div class="card-value muted">--</div></div>
+        <div class="info-card"><div class="card-label">Temp. Interna</div><div class="card-value muted">--</div></div>
+        <div class="info-card"><div class="card-label">Temp. Externa</div><div class="card-value sm muted">--</div></div>
+      </div>
+      <div class="cards-row">
+        <div class="info-card"><div class="card-label">Estado do AC</div><div class="card-value sm muted">--</div></div>
+        <div class="info-card"><div class="card-label">Modo Conforto</div><div class="card-value sm muted">--</div></div>
+      </div>
+      <div class="cards-row">
+        <div class="info-card"><div class="card-label">Ventilação Motorista</div><div class="card-value sm muted">--</div></div>
+        <div class="info-card"><div class="card-label">Ventilação Passageiro</div><div class="card-value sm muted">--</div></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══════════════════════ HVAC DEBUG ══════════════════════ -->
+<div id="hvac" class="screen">
+  <div>
+    <div class="phone-label" style="margin-bottom:10px">HVAC Debug</div>
+    <div class="phone tall">
+
+      <div class="back-header">
+        <button class="back-btn"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg></button>
+        <div><h2>HVAC</h2><p>Diagnóstico do sistema de climatização</p></div>
+      </div>
+
+      <div class="section-title">Temperaturas</div>
+      <div class="cards-row">
+        <div class="info-card"><div class="card-label">Temp. Interna</div><div class="card-value orange" style="font-size:22px">27.3°C</div></div>
+        <div class="info-card"><div class="card-label">Temp. Setada</div><div class="card-value blue" style="font-size:22px">24.0°C</div></div>
+        <div class="info-card"><div class="card-label">Temp. Externa</div><div class="card-value sm pink">31.0°C</div></div>
+      </div>
+
+      <div class="section-title">Controles HVAC</div>
+      <div class="hvac-list">
+        <div class="hvac-toggle"><div><div class="ht-lbl">ac_enable</div><div class="ht-val">1</div></div><div class="mini-btns"><button class="mini-btn on">0</button><button class="mini-btn">1</button></div></div>
+        <div class="hvac-toggle"><div><div class="ht-lbl">auto_enable</div><div class="ht-val">1</div></div><div class="mini-btns"><button class="mini-btn on">0</button><button class="mini-btn">1</button></div></div>
+        <div class="hvac-toggle"><div><div class="ht-lbl">power_mode</div><div class="ht-val">1</div></div><div class="mini-btns"><button class="mini-btn on">0</button><button class="mini-btn">1</button></div></div>
+        <div class="hvac-toggle"><div><div class="ht-lbl">front_defrost_enable</div><div class="ht-val">0</div></div><div class="mini-btns"><button class="mini-btn">0</button><button class="mini-btn on">1</button></div></div>
+        <div class="hvac-toggle"><div><div class="ht-lbl">heating_enable</div><div class="ht-val">0</div></div><div class="mini-btns"><button class="mini-btn">0</button><button class="mini-btn on">1</button></div></div>
+        <div class="hvac-toggle"><div><div class="ht-lbl">comfort_curve</div><div class="ht-val amber">1</div></div><div class="mini-btns"><button class="mini-btn on">0</button><button class="mini-btn">1</button><button class="mini-btn">2</button></div></div>
+      </div>
+
+      <div class="section-title">Sensores (read-only)</div>
+      <div class="hvac-list">
+        <div class="hvac-toggle"><div><div class="ht-lbl">front_temperature_range</div><div class="ht-val">22</div></div><span class="ro-badge">read-only</span></div>
+        <div class="hvac-toggle"><div><div class="ht-lbl">Intelligent_temperature_range</div><div class="ht-val">24</div></div><span class="ro-badge">read-only</span></div>
+        <div class="hvac-toggle"><div><div class="ht-lbl">pm2.5_value</div><div class="ht-val green">12</div></div><span class="ro-badge">read-only</span></div>
+      </div>
+
+      <div class="section-title">Histórico de Ações</div>
+      <div class="log-box">
+        <div class="log-entry ok">14:32:05  AC ligado — partida do carro (30s protegido)</div>
+        <div class="log-entry ok">14:35:12  AC ligado — interna 27.3°C ≥ set 24.0°C</div>
+        <div class="log-entry">14:33:01  Comfort curve → 1 — interna 24.8°C</div>
+        <div class="log-entry">14:31:47  AC desligado — interna 23.0°C ≤ set 24.0°C (histerese 1.0°C)</div>
+        <div class="log-entry">14:30:22  Ventilação bancos → 2 — interna 27.3°C</div>
+        <div class="log-entry">14:28:10  AC ligado — interna 24.0°C = set 24.0°C após >1 min</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════ ASSENTO ══════════════════════ -->
+<div id="assento" class="screen">
+  <div>
+    <div class="phone-label" style="margin-bottom:10px">Tela Assento</div>
+    <div class="phone tall">
+
+      <div class="back-header">
+        <button class="back-btn"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg></button>
+        <div><h2>Assento</h2><p>Monitoramento de memória de assento</p></div>
+      </div>
+
+      <div class="seat-card active-card">
+        <div class="sc-lbl">chair_memory.auto_enable</div>
+        <div class="sc-val">1</div>
+        <div class="sc-btns"><button class="sc-btn">0</button><button class="sc-btn active">1</button></div>
+      </div>
+
+      <div class="seat-card">
+        <div class="sc-lbl">ass_memory_setting</div>
+        <div class="sc-val">1</div>
+        <div class="sc-btns"><button class="sc-btn">0</button><button class="sc-btn active">1</button><button class="sc-btn">2</button><button class="sc-btn">3</button></div>
+      </div>
+
+      <div class="seat-card">
+        <div class="sc-lbl">chair_mem_pos_set_action</div>
+        <div class="sc-val">--</div>
+        <div class="sc-btns"><button class="sc-btn">1</button><button class="sc-btn">2</button><button class="sc-btn">3</button></div>
+      </div>
+
+      <div class="seat-card">
+        <div class="sc-lbl">chair_mem_pos_set_feedback</div>
+        <div class="sc-row"><span class="sc-val">0</span><span class="ro-badge">read-only</span></div>
+      </div>
+
+      <div class="seat-card">
+        <div class="sc-lbl">driver_seat_ventilation_level</div>
+        <div class="sc-row"><span class="sc-val blue2">2</span><span class="ro-badge">read-only</span></div>
+      </div>
+
+      <div class="seat-card">
+        <div class="sc-lbl">passenger_seat_ventilation_level</div>
+        <div class="sc-row"><span class="sc-val blue2">2</span><span class="ro-badge">read-only</span></div>
+      </div>
+
+      <div class="section-title">Histórico de Ações</div>
+      <div class="log-box">
+        <div class="log-entry">14:35:12  chair_memory.auto_enable → 1</div>
+        <div class="log-entry">14:33:47  ass_memory_setting → 1</div>
+        <div class="log-entry">14:32:05  chair_mem_pos_set_action → 2</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════ INFO DA TELA ══════════════════════ -->
+<div id="screeninfo" class="screen">
+  <div>
+    <div class="phone-label" style="margin-bottom:10px">Info da Tela</div>
+    <div class="phone">
+
+      <div class="back-header">
+        <button class="back-btn"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg></button>
+        <div><h2>Info da Tela</h2><p>Métricas do display</p></div>
+      </div>
+
+      <div class="info-list">
+        <div class="info-list-row"><span class="il-lbl">Resolução (px)</span><span class="il-val">1792 × 720</span></div>
+        <div class="info-list-row"><span class="il-lbl">Resolução real (px)</span><span class="il-val">1920 × 720</span></div>
+        <div class="info-list-row"><span class="il-lbl">Tamanho (dp)</span><span class="il-val">1792 × 720 dp</span></div>
+        <div class="info-list-row"><span class="il-lbl">Config screenWidthDp</span><span class="il-val">1792 dp</span></div>
+        <div class="info-list-row"><span class="il-lbl">Config screenHeightDp</span><span class="il-val">660 dp</span></div>
+        <div class="info-list-row"><span class="il-lbl">smallestScreenWidthDp</span><span class="il-val">720 dp</span></div>
+        <div class="info-list-row"><span class="il-lbl">Densidade (dpi)</span><span class="il-val">160 dpi</span></div>
+        <div class="info-list-row"><span class="il-lbl">Fator de escala</span><span class="il-val">1.00</span></div>
+        <div class="info-list-row"><span class="il-lbl">DPI físico X</span><span class="il-val">320.0</span></div>
+        <div class="info-list-row"><span class="il-lbl">DPI físico Y</span><span class="il-val">320.0</span></div>
+        <div class="info-list-row"><span class="il-lbl">Proporção (W/H)</span><span class="il-val">2.489</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function show(tab) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById(tab).classList.add('active');
+    document.querySelectorAll('.tab')[['main','hvac','assento','screeninfo'].indexOf(tab)].classList.add('active');
+  }
+</script>
+</body>
+</html>
