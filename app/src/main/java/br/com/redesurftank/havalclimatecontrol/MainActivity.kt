@@ -362,6 +362,12 @@ fun MainControlScreen(onNavigateToDebug: () -> Unit, onNavigateToAssento: () -> 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             InfoCard(
                 modifier    = Modifier.weight(1f),
+                label       = "Temp. Externa",
+                value       = formatTemp(state.outsideTemp),
+                valueColor  = Color(0xFFEF9A9A)
+            )
+            InfoCard(
+                modifier    = Modifier.weight(1f),
                 label       = "Temp. Interna",
                 value       = formatTemp(state.insideTemp),
                 valueColor  = Color(0xFFFFB74D)

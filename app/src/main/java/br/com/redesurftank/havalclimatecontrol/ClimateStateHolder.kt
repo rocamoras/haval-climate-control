@@ -11,6 +11,7 @@ object ClimateStateHolder {
     var autoControlEnabled    by mutableStateOf(true)
     var autoEnable       by mutableStateOf("--")
     var insideTemp       by mutableStateOf("--")
+    var outsideTemp      by mutableStateOf("--")
     var driverTemp       by mutableStateOf("--")
     var powerMode        by mutableStateOf("--")
     val actionLog        = mutableStateListOf<String>()
@@ -52,13 +53,15 @@ object ClimateStateHolder {
         inside: String?,
         driver: String?,
         power: String?,
-        auto: String?
+        auto: String?,
+        outside: String?
     ) {
         vehicleConnected = connected
-        insideTemp       = inside ?: "--"
-        driverTemp       = driver ?: "--"
-        powerMode        = power  ?: "--"
-        autoEnable       = auto   ?: "--"
+        insideTemp       = inside   ?: "--"
+        outsideTemp      = outside  ?: "--"
+        driverTemp       = driver   ?: "--"
+        powerMode        = power    ?: "--"
+        autoEnable       = auto     ?: "--"
     }
 
     fun updateHvacExtras(

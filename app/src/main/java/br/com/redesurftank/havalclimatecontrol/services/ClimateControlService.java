@@ -80,6 +80,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String PROP_CHAIR_MEM_POS_FEEDBACK= "car.comfort_setting.chair_mem_pos_set_feedback";
     private static final String PROP_DRIVER_SEAT_VENT      = "car.comfort_setting.driver_seat_ventilation_level";
     private static final String PROP_PASSENGER_SEAT_VENT   = "car.comfort_setting.passenger_seat_ventilation_level";
+    private static final String PROP_OUTSIDE_TEMP          = "car.basic.outside_temp";
 
     private static final String[] ALL_PROPS = {
         "car.hvac.auto_enable", "car.basic.inside_temp",
@@ -94,7 +95,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         "car.comfort_setting.chair_mem_pos_set_action",
         "car.comfort_setting.chair_mem_pos_set_feedback",
         "car.comfort_setting.driver_seat_ventilation_level",
-        "car.comfort_setting.passenger_seat_ventilation_level"
+        "car.comfort_setting.passenger_seat_ventilation_level",
+        "car.basic.outside_temp"
     };
 
     private static Method getServiceMethod;
@@ -126,7 +128,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private IIntelligentVehicleControlService controlService;
     private final Map<String, String> dataCache = new HashMap<>();
 
-    private long acOffTimestamp = 0; // epoch ms do último desligamento do AC pelo controle automático
+    private long    acOffTimestamp        = 0;    // epoch ms do último desligamento do AC pelo controle automático
+    private long    carStartTimestamp     = 0;    // epoch ms da última partida do carro detectada
+    private boolean insideTempWasOffline  = true; // true enquanto o sensor estava offline (carro desligado)
 
     private boolean  isHvacSuspended    = false;
     private Runnable resumeHvacRunnable = null;
@@ -362,17 +366,33 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
             String insideTempStr = dataCache.get(PROP_INSIDE_TEMP);
             if (insideTempStr == null) {
+                insideTempWasOffline = true;
                 pushState(true, null);
                 return;
             }
             float insideTemp = Float.parseFloat(insideTempStr);
             if (insideTemp == 87f) {
                 // Sensor offline — car is off, ignore reading
+                insideTempWasOffline = true;
                 pushState(true, null);
                 return;
             }
 
             String logEntry = null;
+
+            // Detectar partida do carro (transição offline → online)
+            if (insideTempWasOffline) {
+                insideTempWasOffline = false;
+                carStartTimestamp    = System.currentTimeMillis();
+                Log.w(TAG, "Partida do carro detectada — AC protegido por 30s");
+                String acEnableStr = dataCache.get(PROP_AC_ENABLE);
+                if (!"1".equals(acEnableStr)) {
+                    sendHvacCommand(PROP_AC_ENABLE, "1");
+                    dataCache.put(PROP_AC_ENABLE, "1");
+                    acOffTimestamp = 0;
+                    logEntry = timeFormat.format(new Date()) + "  AC ligado — partida do carro (30s protegido)";
+                }
+            }
 
             // Bloco A — AC + comfort curve (requer modo auto do HVAC ligado)
             String autoEnable = dataCache.get(PROP_AUTO_ENABLE);
@@ -383,12 +403,26 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                     float setTemp  = Float.parseFloat(driverTempStr);
                     boolean isAcOn = "1".equals(acEnableStr);
 
+                    // Histerese variável conforme temperatura externa
+                    float hysteresis = 0.5f;
+                    String outsideTempStr = dataCache.get(PROP_OUTSIDE_TEMP);
+                    if (outsideTempStr != null) {
+                        try {
+                            if (Float.parseFloat(outsideTempStr) > 28f) hysteresis = 1.0f;
+                        } catch (NumberFormatException ignored) {}
+                    }
+
                     boolean acOffOver1Min = acOffTimestamp > 0
                             && (System.currentTimeMillis() - acOffTimestamp) > 60_000L;
 
-                    if (insideTemp <= setTemp - 0.5f && isAcOn) {
+                    // Proteção de 30s após partida — não desliga o AC
+                    boolean inStartProtection = carStartTimestamp > 0
+                            && (System.currentTimeMillis() - carStartTimestamp) < 30_000L;
+
+                    if (insideTemp <= setTemp - hysteresis && isAcOn && !inStartProtection) {
                         String msg = String.format(Locale.getDefault(),
-                                "AC desligado — interna %.1f°C ≤ set %.1f°C", insideTemp, setTemp);
+                                "AC desligado — interna %.1f°C ≤ set %.1f°C (histerese %.1f°C)",
+                                insideTemp, setTemp, hysteresis);
                         Log.w(TAG, msg);
                         sendHvacCommand(PROP_AC_ENABLE, "0");
                         dataCache.put(PROP_AC_ENABLE, "0");
@@ -487,9 +521,10 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         String chairMemFeedback= dataCache.get(PROP_CHAIR_MEM_POS_FEEDBACK);
         String driverVent      = dataCache.get(PROP_DRIVER_SEAT_VENT);
         String passengerVent   = dataCache.get(PROP_PASSENGER_SEAT_VENT);
+        String outsideTemp     = dataCache.get(PROP_OUTSIDE_TEMP);
 
         mainHandler.post(() -> {
-            ClimateStateHolder.INSTANCE.updateVehicleData(connected, inside, driver, power, auto);
+            ClimateStateHolder.INSTANCE.updateVehicleData(connected, inside, driver, power, auto, outsideTemp);
             ClimateStateHolder.INSTANCE.updateHvacExtras(acEn, frontDef, heating, intSw, limitEn,
                     frontTRange, intTRange, pm25, comfort);
             ClimateStateHolder.INSTANCE.updateSeatData(chairMemAuto, assMemSetting,
