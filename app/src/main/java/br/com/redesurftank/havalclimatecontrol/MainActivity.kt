@@ -15,6 +15,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -40,6 +41,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
@@ -145,6 +147,7 @@ fun MainControlScreen(
     var seatVentAutoEnabled by remember {
         mutableStateOf(prefs.getBoolean(KEY_SEAT_VENT_AUTO, true))
     }
+    var devMenuVisible by remember { mutableStateOf(false) }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -244,10 +247,12 @@ fun MainControlScreen(
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
         HmiHeader(
-            currentVersion        = currentVersion,
-            connected             = state.vehicleConnected,
-            onNavigateToDebug     = onNavigateToDebug,
-            onNavigateToAssento   = onNavigateToAssento,
+            currentVersion         = currentVersion,
+            connected              = state.vehicleConnected,
+            devMenuVisible         = devMenuVisible,
+            onVersionDoubleTap     = { devMenuVisible = !devMenuVisible },
+            onNavigateToDebug      = onNavigateToDebug,
+            onNavigateToAssento    = onNavigateToAssento,
             onNavigateToScreenInfo = onNavigateToScreenInfo
         )
 
@@ -364,6 +369,8 @@ fun MainControlScreen(
 private fun HmiHeader(
     currentVersion: String,
     connected: Boolean,
+    devMenuVisible: Boolean,
+    onVersionDoubleTap: () -> Unit,
     onNavigateToDebug: () -> Unit,
     onNavigateToAssento: () -> Unit,
     onNavigateToScreenInfo: () -> Unit
@@ -396,12 +403,14 @@ private fun HmiHeader(
             )
         }
 
-        // Nav tabs
+        // Nav tabs — dev tabs hidden by default, revealed by double-tapping the version
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            HmiNavTab(label = "Principal", number = "01", active = true,  onClick = {})
-            HmiNavTab(label = "HVAC",      number = "02", active = false, onClick = onNavigateToDebug)
-            HmiNavTab(label = "Assento",   number = "03", active = false, onClick = onNavigateToAssento)
-            HmiNavTab(label = "Tela",      number = "04", active = false, onClick = onNavigateToScreenInfo)
+            HmiNavTab(label = "Principal", number = "01", active = true, onClick = {})
+            if (devMenuVisible) {
+                HmiNavTab(label = "HVAC",    number = "02", active = false, onClick = onNavigateToDebug)
+                HmiNavTab(label = "Assento", number = "03", active = false, onClick = onNavigateToAssento)
+                HmiNavTab(label = "Tela",    number = "04", active = false, onClick = onNavigateToScreenInfo)
+            }
         }
 
         // Status cluster
@@ -436,9 +445,12 @@ private fun HmiHeader(
             Text(
                 "v$currentVersion",
                 fontSize      = 11.sp,
-                color         = HmiFgDim,
+                color         = if (devMenuVisible) HmiAccent else HmiFgDim,
                 fontFamily    = FontFamily.Monospace,
-                letterSpacing = 0.5.sp
+                letterSpacing = 0.5.sp,
+                modifier      = Modifier.pointerInput(Unit) {
+                    detectTapGestures(onDoubleTap = { onVersionDoubleTap() })
+                }
             )
         }
     }
