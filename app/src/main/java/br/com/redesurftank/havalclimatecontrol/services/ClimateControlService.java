@@ -495,6 +495,25 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 }
             }
 
+            // Bloco C — Aquecimento por temperatura externa
+            String outsideTempForHeating = dataCache.get(PROP_OUTSIDE_TEMP);
+            if (outsideTempForHeating != null) {
+                try {
+                    float outsideTemp = Float.parseFloat(outsideTempForHeating);
+                    String desiredHeating = outsideTemp < 20f ? "1" : "0";
+                    String currentHeating = dataCache.get(PROP_HEATING);
+                    if (!desiredHeating.equals(currentHeating)) {
+                        String msg = String.format(Locale.getDefault(),
+                                "Aquecimento → %s — externa %.1f°C",
+                                "1".equals(desiredHeating) ? "ligado" : "desligado", outsideTemp);
+                        Log.w(TAG, msg);
+                        sendHvacCommand(PROP_HEATING, desiredHeating);
+                        dataCache.put(PROP_HEATING, desiredHeating);
+                        if (logEntry == null) logEntry = timeFormat.format(new Date()) + "  " + msg;
+                    }
+                } catch (NumberFormatException ignored) {}
+            }
+
             pushState(true, logEntry);
         } catch (Exception e) {
             Log.e(TAG, "Error evaluating climate control: " + e.getMessage(), e);
