@@ -462,35 +462,37 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             }
 
             // Bloco B — Ventilação dos bancos (independente do modo auto do HVAC)
-            String desiredVentLevel;
-            if (insideTemp > 28f) {
-                desiredVentLevel = "3";
-            } else if (insideTemp > 26f) {
-                desiredVentLevel = "2";
-            } else if (insideTemp > 24f) {
-                desiredVentLevel = "1";
-            } else {
-                desiredVentLevel = "0";
-            }
+            if (ClimateStateHolder.INSTANCE.getSeatVentAutoEnabled()) {
+                String desiredVentLevel;
+                if (insideTemp > 28f) {
+                    desiredVentLevel = "3";
+                } else if (insideTemp > 26f) {
+                    desiredVentLevel = "2";
+                } else if (insideTemp > 24f) {
+                    desiredVentLevel = "1";
+                } else {
+                    desiredVentLevel = "0";
+                }
 
-            String currentDriverVent    = dataCache.get(PROP_DRIVER_SEAT_VENT);
-            String currentPassengerVent = dataCache.get(PROP_PASSENGER_SEAT_VENT);
-            boolean ventChanged = !desiredVentLevel.equals(currentDriverVent)
-                    || !desiredVentLevel.equals(currentPassengerVent);
+                String currentDriverVent    = dataCache.get(PROP_DRIVER_SEAT_VENT);
+                String currentPassengerVent = dataCache.get(PROP_PASSENGER_SEAT_VENT);
+                boolean ventChanged = !desiredVentLevel.equals(currentDriverVent)
+                        || !desiredVentLevel.equals(currentPassengerVent);
 
-            if (!desiredVentLevel.equals(currentDriverVent)) {
-                sendHvacCommand(PROP_DRIVER_SEAT_VENT, desiredVentLevel);
-                dataCache.put(PROP_DRIVER_SEAT_VENT, desiredVentLevel);
-            }
-            if (!desiredVentLevel.equals(currentPassengerVent)) {
-                sendHvacCommand(PROP_PASSENGER_SEAT_VENT, desiredVentLevel);
-                dataCache.put(PROP_PASSENGER_SEAT_VENT, desiredVentLevel);
-            }
-            if (ventChanged && logEntry == null) {
-                String msg = String.format(Locale.getDefault(),
-                        "Ventilação bancos → %s — interna %.1f°C", desiredVentLevel, insideTemp);
-                Log.w(TAG, msg);
-                logEntry = timeFormat.format(new Date()) + "  " + msg;
+                if (!desiredVentLevel.equals(currentDriverVent)) {
+                    sendHvacCommand(PROP_DRIVER_SEAT_VENT, desiredVentLevel);
+                    dataCache.put(PROP_DRIVER_SEAT_VENT, desiredVentLevel);
+                }
+                if (!desiredVentLevel.equals(currentPassengerVent)) {
+                    sendHvacCommand(PROP_PASSENGER_SEAT_VENT, desiredVentLevel);
+                    dataCache.put(PROP_PASSENGER_SEAT_VENT, desiredVentLevel);
+                }
+                if (ventChanged && logEntry == null) {
+                    String msg = String.format(Locale.getDefault(),
+                            "Ventilação bancos → %s — interna %.1f°C", desiredVentLevel, insideTemp);
+                    Log.w(TAG, msg);
+                    logEntry = timeFormat.format(new Date()) + "  " + msg;
+                }
             }
 
             pushState(true, logEntry);

@@ -62,6 +62,7 @@ private const val GITHUB_RELEASES_API =
 private const val UI_PREFS                 = "climate_ui_prefs"
 private const val KEY_AUTO_CONTROL         = "auto_control_enabled"
 private const val KEY_LAST_UPDATE_CHECK    = "last_update_check_ms"
+private const val KEY_SEAT_VENT_AUTO       = "seat_vent_auto_enabled"
 private const val UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
 // ─────────────────────────────────────────────────────────────
@@ -141,13 +142,17 @@ fun MainControlScreen(
     var autoControlEnabled by remember {
         mutableStateOf(prefs.getBoolean(KEY_AUTO_CONTROL, true))
     }
+    var seatVentAutoEnabled by remember {
+        mutableStateOf(prefs.getBoolean(KEY_SEAT_VENT_AUTO, true))
+    }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { }
 
     LaunchedEffect(Unit) {
-        state.autoControlEnabled = autoControlEnabled
+        state.autoControlEnabled    = autoControlEnabled
+        state.seatVentAutoEnabled   = seatVentAutoEnabled
         try {
             currentVersion = context.packageManager
                 .getPackageInfo(context.packageName, 0).versionName ?: "--"
@@ -301,7 +306,20 @@ fun MainControlScreen(
         }
 
         // Bottom info strip
-        HmiInfoStripRow(state = state)
+        HmiInfoStripRow(
+            state               = state,
+            seatVentAutoEnabled = seatVentAutoEnabled,
+            onToggleSeatVent    = {
+                val next = !seatVentAutoEnabled
+                seatVentAutoEnabled       = next
+                state.seatVentAutoEnabled = next
+                prefs.edit().putBoolean(KEY_SEAT_VENT_AUTO, next).apply()
+                if (!next) {
+                    state.sendCommand("car.comfort_setting.driver_seat_ventilation_level",    "0")
+                    state.sendCommand("car.comfort_setting.passenger_seat_ventilation_level", "0")
+                }
+            }
+        )
     }
 
     if (showErrDialog) {
@@ -966,7 +984,11 @@ private fun TempReadCard(
 }
 
 @Composable
-private fun HmiInfoStripRow(state: ClimateStateHolder) {
+private fun HmiInfoStripRow(
+    state: ClimateStateHolder,
+    seatVentAutoEnabled: Boolean,
+    onToggleSeatVent: () -> Unit
+) {
     val isAcOn = state.acEnable == "1"
 
     Row(
@@ -1064,10 +1086,22 @@ private fun HmiInfoStripRow(state: ClimateStateHolder) {
         }
 
         // 3. Ventilação Motorista
-        VentInfoCard(modifier = Modifier.weight(1f), label = "VENTILAÇÃO MOTORISTA",   level = state.driverSeatVentLevel)
+        VentInfoCard(
+            modifier    = Modifier.weight(1f),
+            label       = "VENTILAÇÃO MOTORISTA",
+            level       = state.driverSeatVentLevel,
+            autoEnabled = seatVentAutoEnabled,
+            onToggle    = onToggleSeatVent
+        )
 
         // 4. Ventilação Passageiro
-        VentInfoCard(modifier = Modifier.weight(1f), label = "VENTILAÇÃO PASSAGEIRO", level = state.passengerSeatVentLevel)
+        VentInfoCard(
+            modifier    = Modifier.weight(1f),
+            label       = "VENTILAÇÃO PASSAGEIRO",
+            level       = state.passengerSeatVentLevel,
+            autoEnabled = seatVentAutoEnabled,
+            onToggle    = onToggleSeatVent
+        )
     }
 }
 
@@ -1087,10 +1121,18 @@ private fun HmiInfoCardBox(
 }
 
 @Composable
-private fun VentInfoCard(modifier: Modifier = Modifier, label: String, level: String) {
-    val levelInt = level.toIntOrNull() ?: 0
+private fun VentInfoCard(
+    modifier: Modifier = Modifier,
+    label: String,
+    level: String,
+    autoEnabled: Boolean,
+    onToggle: () -> Unit
+) {
+    val levelInt = if (autoEnabled) (level.toIntOrNull() ?: 0) else 0
 
-    HmiInfoCardBox(modifier = modifier) {
+    HmiInfoCardBox(
+        modifier = modifier.clickable(onClick = onToggle)
+    ) {
         Row(
             modifier              = Modifier.fillMaxSize(),
             verticalAlignment     = Alignment.CenterVertically,
@@ -1114,12 +1156,48 @@ private fun VentInfoCard(modifier: Modifier = Modifier, label: String, level: St
                 modifier            = Modifier.weight(1f),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(label, fontSize = 10.sp, color = HmiFgDim, letterSpacing = 2.sp, fontWeight = FontWeight.SemiBold)
+                // Label + badge de modo
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment     = Alignment.CenterVertically
+                ) {
+                    Text(
+                        label,
+                        fontSize      = 10.sp,
+                        color         = HmiFgDim,
+                        letterSpacing = 2.sp,
+                        fontWeight    = FontWeight.SemiBold
+                    )
+                    Row(
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .background(
+                                    if (autoEnabled) HmiAccent else HmiFgFaint,
+                                    CircleShape
+                                )
+                        )
+                        Text(
+                            if (autoEnabled) "AUTO" else "OFF",
+                            fontSize      = 9.sp,
+                            fontWeight    = FontWeight.SemiBold,
+                            fontFamily    = FontFamily.Monospace,
+                            color         = if (autoEnabled) HmiAccent else HmiFgDim,
+                            letterSpacing = 1.sp
+                        )
+                    }
+                }
                 Text(
-                    when (level) { "0" -> "Off"; "1" -> "Nível 1"; "2" -> "Nível 2"; "3" -> "Nível 3"; else -> "--" },
+                    if (autoEnabled) when (level) {
+                        "0" -> "Off"; "1" -> "Nível 1"; "2" -> "Nível 2"; "3" -> "Nível 3"; else -> "--"
+                    } else "--",
                     fontSize      = 20.sp,
                     fontWeight    = FontWeight.Medium,
-                    color         = HmiFg,
+                    color         = if (autoEnabled) HmiFg else HmiFgFaint,
                     letterSpacing = (-0.3).sp
                 )
                 Row(
@@ -1132,12 +1210,12 @@ private fun VentInfoCard(modifier: Modifier = Modifier, label: String, level: St
                                 .weight(1f)
                                 .height(5.dp)
                                 .background(
-                                    if (i <= levelInt) HmiFg else HmiSurface2,
+                                    if (autoEnabled && i <= levelInt) HmiFg else HmiSurface2,
                                     RoundedCornerShape(1.dp)
                                 )
                                 .border(
                                     0.5.dp,
-                                    if (i <= levelInt) HmiFgMuted else HmiBorder,
+                                    if (autoEnabled && i <= levelInt) HmiFgMuted else HmiBorder,
                                     RoundedCornerShape(1.dp)
                                 )
                         )

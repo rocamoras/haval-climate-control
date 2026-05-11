@@ -37,6 +37,7 @@ object ClimateStateHolder {
     var chairMemPosSetFeedback by mutableStateOf("--")
     var driverSeatVentLevel    by mutableStateOf("--")
     var passengerSeatVentLevel by mutableStateOf("--")
+    var seatVentAutoEnabled    by mutableStateOf(true)
 
     fun interface CommandCallback {
         fun onCommand(key: String, value: String)
