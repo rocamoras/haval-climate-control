@@ -24,6 +24,9 @@ object ClimateStateHolder {
     var intelligentSwitch     by mutableStateOf("--")
     var settingLimitEnable    by mutableStateOf("--")
 
+    // EV properties
+    var wadeModeEnable        by mutableStateOf("--")
+
     // Read-only properties
     var frontTempRange        by mutableStateOf("--")
     var intelligentTempRange  by mutableStateOf("--")
@@ -74,7 +77,8 @@ object ClimateStateHolder {
         frontTRange: String?,
         intTRange: String?,
         pm25: String?,
-        comfort: String?
+        comfort: String?,
+        wadeMode: String? = null
     ) {
         acEnable             = acEn         ?: "--"
         frontDefrostEnable   = frontDefrost ?: "--"
@@ -85,6 +89,7 @@ object ClimateStateHolder {
         intelligentTempRange = intTRange    ?: "--"
         pm25Value            = pm25         ?: "--"
         comfortCurve         = comfort      ?: "--"
+        wadeModeEnable       = wadeMode     ?: "--"
     }
 
     fun updateSeatData(

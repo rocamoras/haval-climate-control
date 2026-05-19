@@ -1434,6 +1434,17 @@ fun DebugScreen(onNavigateBack: () -> Unit) {
 
         Spacer(Modifier.height(10.dp))
 
+        Text("Controles EV", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
+        Spacer(Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            HvacToggle("wade_mode", state.wadeModeEnable, "car.ev.setting.wade_mode_enable")
+        }
+
+        Spacer(Modifier.height(10.dp))
+
         Text("Sensores HVAC", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
         Spacer(Modifier.height(6.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

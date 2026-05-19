@@ -81,6 +81,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String PROP_DRIVER_SEAT_VENT      = "car.comfort_setting.driver_seat_ventilation_level";
     private static final String PROP_PASSENGER_SEAT_VENT   = "car.comfort_setting.passenger_seat_ventilation_level";
     private static final String PROP_OUTSIDE_TEMP          = "car.basic.outside_temp";
+    private static final String PROP_WADE_MODE             = "car.ev.setting.wade_mode_enable";
 
     private static final String[] ALL_PROPS = {
         "car.hvac.auto_enable", "car.basic.inside_temp",
@@ -96,7 +97,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         "car.comfort_setting.chair_mem_pos_set_feedback",
         "car.comfort_setting.driver_seat_ventilation_level",
         "car.comfort_setting.passenger_seat_ventilation_level",
-        "car.basic.outside_temp"
+        "car.basic.outside_temp",
+        "car.ev.setting.wade_mode_enable"
     };
 
     private static Method getServiceMethod;
@@ -534,6 +536,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         String intTRange   = dataCache.get(PROP_INT_TEMP_RANGE);
         String pm25        = dataCache.get(PROP_PM25);
         String comfort     = dataCache.get(PROP_COMFORT_CURVE);
+        String wadeMode    = dataCache.get(PROP_WADE_MODE);
         final String finalLog = logEntry;
 
         String chairMemAuto    = dataCache.get(PROP_CHAIR_MEMORY_AUTO);
@@ -547,7 +550,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         mainHandler.post(() -> {
             ClimateStateHolder.INSTANCE.updateVehicleData(connected, inside, driver, power, auto, outsideTemp);
             ClimateStateHolder.INSTANCE.updateHvacExtras(acEn, frontDef, heating, intSw, limitEn,
-                    frontTRange, intTRange, pm25, comfort);
+                    frontTRange, intTRange, pm25, comfort, wadeMode);
             ClimateStateHolder.INSTANCE.updateSeatData(chairMemAuto, assMemSetting,
                     chairMemAction, chairMemFeedback, driverVent, passengerVent);
             if (finalLog != null) {
