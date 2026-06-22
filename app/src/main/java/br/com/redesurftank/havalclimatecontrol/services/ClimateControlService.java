@@ -58,6 +58,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private static final String HVAC_PACKAGE_NAME   = "com.beantechs.hvac";
     private static final long   HVAC_RESUME_DELAY_MS = 300;
+    private static final long   EVAL_DEBOUNCE_MS     = 50;     // coalesce bursts de onDataChanged numa única avaliação
+    private static final long   IPTABLES_REFRESH_MS  = 60_000; // re-assert da regra iptables (idempotente, antes 15s)
+    private static final long   BOOTSTRAP_BACKOFF_MAX_MS = 30_000;
 
     private static final String PROP_AUTO_ENABLE = "car.hvac.auto_enable";
     private static final String PROP_INSIDE_TEMP = "car.basic.inside_temp";
@@ -137,6 +140,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private boolean  isHvacSuspended    = false;
     private Runnable resumeHvacRunnable = null;
     private final Runnable acOffCheckRunnable = this::evaluateClimateControl;
+    // Instância única e estável para coalescência via removeCallbacks/postDelayed.
+    // Mantida SEPARADA de acOffCheckRunnable para não cancelar o recheck de 62s do AC.
+    private final Runnable evalRunnable        = this::evaluateClimateControl;
 
     // Rastreamento do último valor enviado pelo app — usado para detectar alterações externas
     private volatile String  lastSentDriverVent    = null;
@@ -151,7 +157,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         @Override
         public void onDataChanged(String key, String value) {
             dataCache.put(key, value);
-            backgroundHandler.post(ClimateControlService.this::evaluateClimateControl);
+            // Coalesce: um burst de N propriedades dispara uma única avaliação após assentar.
+            backgroundHandler.removeCallbacks(evalRunnable);
+            backgroundHandler.postDelayed(evalRunnable, EVAL_DEBOUNCE_MS);
         }
     };
 
@@ -212,6 +220,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 Shizuku.addBinderReceivedListenerSticky(this::onShizukuBinderReceived);
                 backgroundHandler.postDelayed(timeoutRunnable, 10000);
             } else {
+                final int[] bootstrapAttempt = {0};
                 backgroundHandler.post(new Runnable() {
                     @Override
                     public void run() {
@@ -233,11 +242,15 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             }
                             telnetClient.disconnect();
 
+                            bootstrapAttempt[0] = 0;
                             Shizuku.addBinderReceivedListenerSticky(ClimateControlService.this::onShizukuBinderReceived);
                             backgroundHandler.postDelayed(timeoutRunnable, 5000);
                         } catch (Exception e) {
-                            Log.e(TAG, "Error bootstrapping Shizuku: " + e.getMessage(), e);
-                            backgroundHandler.postDelayed(this, 1000);
+                            // Backoff exponencial (1s→2s→…→30s) para não martelar o Telnet em falha persistente.
+                            long backoff = Math.min(BOOTSTRAP_BACKOFF_MAX_MS,
+                                    1000L << Math.min(bootstrapAttempt[0]++, 5));
+                            Log.e(TAG, "Error bootstrapping Shizuku (retry em " + backoff + "ms): " + e.getMessage(), e);
+                            backgroundHandler.postDelayed(this, backoff);
                         }
                     }
                 });
@@ -289,7 +302,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             public void run() {
                 try {
                     IPTablesUtils.unlockInputOutputAll();
-                    backgroundHandler.postDelayed(this, 15000);
+                    backgroundHandler.postDelayed(this, IPTABLES_REFRESH_MS);
                 } catch (Exception e) {
                     backgroundHandler.postDelayed(this, 5000);
                 }

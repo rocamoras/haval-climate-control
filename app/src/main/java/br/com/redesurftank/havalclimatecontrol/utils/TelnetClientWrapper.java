@@ -82,7 +82,7 @@ public class TelnetClientWrapper {
                 return clean.toString().trim();
             }
 
-            Thread.sleep(10);
+            Thread.sleep(50);
         }
 
         Log.e(TAG, "Timeout waiting for prompt. Lines: " + String.join(", ", lines) + " Buffer: " + buffer);

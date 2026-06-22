@@ -84,6 +84,25 @@ private val HmiAccentEdge = Color(0x6622C55E)
 private val HmiBorder     = Color(0x12FFFFFF)
 private val HmiBorderStr  = Color(0x1FFFFFFF)
 
+// ─────────────────────────────────────────────────────────────
+// Constantes reutilizáveis — evitam realocação por recomposição/frame
+// ─────────────────────────────────────────────────────────────
+private val airflowDashInterval = floatArrayOf(12f, 16f)
+private val comfortModeList      = listOf("AUTO", "SUAVE", "NORMAL", "FORTE")
+
+/** Desenha um traço de airflow reaproveitando o mesmo Path/Paint (zero alocação por traço). */
+private fun drawAirflow(
+    canvas: android.graphics.Canvas,
+    path: android.graphics.Path,
+    paint: android.graphics.Paint,
+    sx: Float, sy: Float, ex: Float, ey: Float
+) {
+    path.rewind()
+    path.moveTo(sx, sy)
+    path.quadTo((sx + ex) / 2f, sy + (ey - sy) * 0.35f, ex, ey)
+    canvas.drawPath(path, paint)
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -181,14 +200,16 @@ fun MainControlScreen(
         val lastCheck = prefs.getLong(KEY_LAST_UPDATE_CHECK, 0L)
         if (System.currentTimeMillis() - lastCheck >= UPDATE_CHECK_INTERVAL_MS) {
             withContext(Dispatchers.IO) {
+                var conn: HttpURLConnection? = null
                 try {
-                    val conn = URL(GITHUB_RELEASES_API).openConnection() as HttpURLConnection
-                    conn.requestMethod = "GET"
-                    conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
-                    conn.connectTimeout = 10_000
-                    conn.readTimeout    = 10_000
-                    if (conn.responseCode == 200) {
-                        val json   = JSONObject(conn.inputStream.bufferedReader().readText())
+                    val c = (URL(GITHUB_RELEASES_API).openConnection() as HttpURLConnection)
+                        .also { conn = it }
+                    c.requestMethod = "GET"
+                    c.setRequestProperty("Accept", "application/vnd.github.v3+json")
+                    c.connectTimeout = 10_000
+                    c.readTimeout    = 10_000
+                    if (c.responseCode == 200) {
+                        val json   = JSONObject(c.inputStream.bufferedReader().readText())
                         val tag    = json.getString("tag_name")
                         val assets = json.getJSONArray("assets")
                         var dlUrl: String? = null
@@ -209,6 +230,8 @@ fun MainControlScreen(
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Background update check failed: ${e.message}")
+                } finally {
+                    conn?.disconnect()
                 }
             }
         }
@@ -228,14 +251,15 @@ fun MainControlScreen(
     fun startDownload() {
         isDownloading = true; downloadProgress = 0f
         downloadJob = scope.launch(Dispatchers.IO) {
+            var conn: HttpURLConnection? = null
             try {
                 val file  = File(context.getExternalFilesDir(null), "update.apk")
-                val conn  = URL(downloadUrl).openConnection() as HttpURLConnection
-                val total = conn.contentLength
+                val c     = (URL(downloadUrl).openConnection() as HttpURLConnection).also { conn = it }
+                val total = c.contentLength
                 val buf   = ByteArray(4096)
                 var bytes = 0; var read: Int
                 FileOutputStream(file).use { out ->
-                    BufferedInputStream(conn.inputStream).use { inp ->
+                    BufferedInputStream(c.inputStream).use { inp ->
                         while (inp.read(buf).also { read = it } != -1) {
                             out.write(buf, 0, read); bytes += read
                             if (total > 0) downloadProgress = bytes.toFloat() / total
@@ -252,6 +276,8 @@ fun MainControlScreen(
                     errDialogText = "Erro no download: ${e.message}"
                     showErrDialog = true
                 }
+            } finally {
+                conn?.disconnect()
             }
         }
     }
@@ -265,7 +291,6 @@ fun MainControlScreen(
     ) {
         HmiHeader(
             currentVersion         = currentVersion,
-            connected              = state.vehicleConnected,
             devMenuVisible         = devMenuVisible,
             onVersionDoubleTap     = { devMenuVisible = !devMenuVisible },
             onNavigateToDebug      = onNavigateToDebug,
@@ -316,19 +341,14 @@ fun MainControlScreen(
             )
             CarVisualizationCard(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
-                autoOn   = autoControlEnabled,
-                setpoint = state.driverTemp
+                autoOn   = autoControlEnabled
             )
             TempColumn(
-                modifier     = Modifier.width(380.dp).fillMaxHeight(),
-                insideTemp   = state.insideTemp,
-                outsideTemp  = state.outsideTemp,
-                setpointTemp = state.driverTemp
+                modifier = Modifier.width(380.dp).fillMaxHeight()
             )
         }
 
         // Bottom info strip
-        val comfortModeList = listOf("AUTO", "SUAVE", "NORMAL", "FORTE")
         HmiInfoStripRow(
             state               = state,
             comfortMode         = comfortMode,
@@ -393,13 +413,14 @@ fun MainControlScreen(
 @Composable
 private fun HmiHeader(
     currentVersion: String,
-    connected: Boolean,
     devMenuVisible: Boolean,
     onVersionDoubleTap: () -> Unit,
     onNavigateToDebug: () -> Unit,
     onNavigateToAssento: () -> Unit,
     onNavigateToScreenInfo: () -> Unit
 ) {
+    // Lido aqui (não na MainControlScreen) para que só o cabeçalho recomponha ao conectar/desconectar.
+    val connected = ClimateStateHolder.vehicleConnected
     Row(
         modifier              = Modifier.fillMaxWidth().height(36.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -664,9 +685,9 @@ private fun AutoMasterCard(
 @Composable
 private fun CarVisualizationCard(
     modifier: Modifier = Modifier,
-    autoOn: Boolean,
-    setpoint: String
+    autoOn: Boolean
 ) {
+    val setpoint = ClimateStateHolder.driverTemp
     val infiniteTransition = rememberInfiniteTransition(label = "airflow")
     val dashOffset by infiniteTransition.animateFloat(
         initialValue   = 0f,
@@ -677,6 +698,17 @@ private fun CarVisualizationCard(
         ),
         label = "dashOffset"
     )
+
+    // Paint e Path reaproveitados entre frames; só o DashPathEffect (offset) muda por frame.
+    val airflowPaint = remember {
+        android.graphics.Paint().apply {
+            color       = android.graphics.Color.argb(140, 255, 255, 255)
+            style       = android.graphics.Paint.Style.STROKE
+            strokeWidth = 1.8f
+            strokeCap   = android.graphics.Paint.Cap.ROUND
+        }
+    }
+    val airflowPath = remember { android.graphics.Path() }
 
     Box(
         modifier = modifier
@@ -855,30 +887,17 @@ private fun CarVisualizationCard(
                     cap         = StrokeCap.Round
                 )
 
-                // Airflow animations
+                // Airflow animations — única alocação por frame é o DashPathEffect (o offset anima)
                 if (autoOn) {
-                    val dashInterval = floatArrayOf(12f, 16f)
-                    val paint = android.graphics.Paint().apply {
-                        color     = android.graphics.Color.argb(140, 255, 255, 255)
-                        style     = android.graphics.Paint.Style.STROKE
-                        strokeWidth = 1.8f
-                        pathEffect  = android.graphics.DashPathEffect(dashInterval, dashOffset)
-                        strokeCap   = android.graphics.Paint.Cap.ROUND
-                    }
-                    data class FlowPath(val sx: Float, val sy: Float, val ex: Float, val ey: Float)
-                    val flows = listOf(
-                        FlowPath(bodyL + 24f + ventSW * 0.5f, ventY + ventH, bodyL + 36f,        h * 0.52f),
-                        FlowPath(bodyL + 24f + ventSW * 1.5f, ventY + ventH, bodyL + 48f,        h * 0.58f),
-                        FlowPath(bodyL + 24f + ventSW * 2.5f, ventY + ventH, bodyR - 48f,        h * 0.52f),
-                        FlowPath(bodyL + 24f + ventSW * 3.5f, ventY + ventH, bodyR - 36f,        h * 0.58f)
-                    )
+                    airflowPaint.pathEffect = android.graphics.DashPathEffect(airflowDashInterval, dashOffset)
+                    val sx0 = bodyL + 24f
+                    val sy  = ventY + ventH
                     drawIntoCanvas { canvas ->
-                        flows.forEach { f ->
-                            val path = android.graphics.Path()
-                            path.moveTo(f.sx, f.sy)
-                            path.quadTo((f.sx + f.ex) / 2f, f.sy + (f.ey - f.sy) * 0.35f, f.ex, f.ey)
-                            canvas.nativeCanvas.drawPath(path, paint)
-                        }
+                        val nc = canvas.nativeCanvas
+                        drawAirflow(nc, airflowPath, airflowPaint, sx0 + ventSW * 0.5f, sy, bodyL + 36f, h * 0.52f)
+                        drawAirflow(nc, airflowPath, airflowPaint, sx0 + ventSW * 1.5f, sy, bodyL + 48f, h * 0.58f)
+                        drawAirflow(nc, airflowPath, airflowPaint, sx0 + ventSW * 2.5f, sy, bodyR - 48f, h * 0.52f)
+                        drawAirflow(nc, airflowPath, airflowPaint, sx0 + ventSW * 3.5f, sy, bodyR - 36f, h * 0.58f)
                     }
                 }
             }
@@ -915,11 +934,12 @@ private fun CarVisualizationCard(
 
 @Composable
 private fun TempColumn(
-    modifier: Modifier = Modifier,
-    insideTemp: String,
-    outsideTemp: String,
-    setpointTemp: String
+    modifier: Modifier = Modifier
 ) {
+    // Lido aqui (não na MainControlScreen) para que só esta coluna recomponha ao mudar temperatura.
+    val insideTemp   = ClimateStateHolder.insideTemp
+    val outsideTemp  = ClimateStateHolder.outsideTemp
+    val setpointTemp = ClimateStateHolder.driverTemp
     val setF    = try { setpointTemp.toFloat() } catch (_: Exception) { null }
     val insideF = try { insideTemp.toFloat() }   catch (_: Exception) { null }
 
@@ -1098,7 +1118,7 @@ private fun HmiInfoStripRow(
                     modifier              = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    listOf("AUTO", "SUAVE", "NORMAL", "FORTE").forEach { mode ->
+                    comfortModeList.forEach { mode ->
                         val isActive = mode == comfortMode
                         Box(
                             modifier = Modifier
@@ -1522,7 +1542,7 @@ fun DebugScreen(onNavigateBack: () -> Unit) {
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                items(state.actionLog.toList()) { entry ->
+                items(state.actionLog) { entry ->
                     Text(entry, fontSize = 15.sp, color = Color(0xFFCCCCCC), fontFamily = FontFamily.Monospace)
                     HorizontalDivider(color = Color(0xFF2A2A2A), thickness = 0.5.dp)
                 }
@@ -1675,7 +1695,7 @@ fun AssentoScreen(onNavigateBack: () -> Unit) {
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                items(state.seatActionLog.toList()) { entry ->
+                items(state.seatActionLog) { entry ->
                     Text(entry, fontSize = 15.sp, color = Color(0xFFCCCCCC), fontFamily = FontFamily.Monospace)
                     HorizontalDivider(color = Color(0xFF2A2A2A), thickness = 0.5.dp)
                 }
