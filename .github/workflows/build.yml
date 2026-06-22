@@ -47,7 +47,26 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease
 
+      # Disparo manual: gera apenas um artifact com nome próprio, SEM criar tag/release
+      # (assim não vira "latest" e o auto-update do app não é afetado).
+      - name: Prepare dispatch APK
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          NAME="haval-climate-control-${{ steps.get_version.outputs.VERSION }}-build${{ github.run_number }}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$NAME"
+          echo "APK_NAME=$NAME" >> $GITHUB_ENV
+
+      - name: Upload APK artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: haval-climate-control-${{ steps.get_version.outputs.VERSION }}-build${{ github.run_number }}
+          path: ${{ env.APK_NAME }}
+          retention-days: 30
+
+      # Push em master/preview: publica a Release normalmente (fluxo de update real)
       - name: Create git tag and GitHub Release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
