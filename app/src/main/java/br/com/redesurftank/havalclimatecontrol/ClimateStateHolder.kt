@@ -15,7 +15,6 @@ object ClimateStateHolder {
     var driverTemp       by mutableStateOf("--")
     var powerMode        by mutableStateOf("--")
     val actionLog        = mutableStateListOf<String>()
-    val seatActionLog    = mutableStateListOf<String>()
 
     // Toggle properties
     var acEnable              by mutableStateOf("--")
@@ -34,10 +33,6 @@ object ClimateStateHolder {
     var comfortCurve          by mutableStateOf("--")
 
     // Seat properties
-    var chairMemoryAutoEnable  by mutableStateOf("--")
-    var assMemorySetting       by mutableStateOf("--")
-    var chairMemPosSetAction   by mutableStateOf("--")
-    var chairMemPosSetFeedback by mutableStateOf("--")
     var driverSeatVentLevel    by mutableStateOf("--")
     var passengerSeatVentLevel by mutableStateOf("--")
     var seatVentAutoEnabled    by mutableStateOf(true)
@@ -118,28 +113,15 @@ object ClimateStateHolder {
     }
 
     fun updateSeatData(
-        chairMemAutoEnable : String?,
-        assMemSetting      : String?,
-        chairMemPosAction  : String?,
-        chairMemPosFeedback: String?,
-        driverVent         : String?,
-        passengerVent      : String?
+        driverVent    : String?,
+        passengerVent : String?
     ) {
-        chairMemoryAutoEnable  = chairMemAutoEnable  ?: "--"
-        assMemorySetting       = assMemSetting       ?: "--"
-        chairMemPosSetAction   = chairMemPosAction   ?: "--"
-        chairMemPosSetFeedback = chairMemPosFeedback ?: "--"
-        driverSeatVentLevel    = driverVent          ?: "--"
-        passengerSeatVentLevel = passengerVent       ?: "--"
+        driverSeatVentLevel    = driverVent    ?: "--"
+        passengerSeatVentLevel = passengerVent ?: "--"
     }
 
     fun addLog(entry: String) {
         actionLog.add(0, entry)
         if (actionLog.size > 50) actionLog.removeAt(actionLog.lastIndex)
-    }
-
-    fun addSeatLog(entry: String) {
-        seatActionLog.add(0, entry)
-        if (seatActionLog.size > 50) seatActionLog.removeAt(seatActionLog.lastIndex)
     }
 }

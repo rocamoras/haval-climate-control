@@ -77,10 +77,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String PROP_PM25              = "car.hvac.pm2.5_value";
     private static final String PROP_COMFORT_CURVE     = "car.hvac.setting.comfort_curve";
 
-    private static final String PROP_CHAIR_MEMORY_AUTO     = "car.comfort_setting.chair_memory.auto_enable";
-    private static final String PROP_ASS_MEMORY_SETTING    = "car.configure.ass_memory_setting";
-    private static final String PROP_CHAIR_MEM_POS_ACTION  = "car.comfort_setting.chair_mem_pos_set_action";
-    private static final String PROP_CHAIR_MEM_POS_FEEDBACK= "car.comfort_setting.chair_mem_pos_set_feedback";
     private static final String PROP_DRIVER_SEAT_VENT      = "car.comfort_setting.driver_seat_ventilation_level";
     private static final String PROP_PASSENGER_SEAT_VENT   = "car.comfort_setting.passenger_seat_ventilation_level";
     private static final String PROP_OUTSIDE_TEMP          = "car.basic.outside_temp";
@@ -94,10 +90,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         "car.hvac.setting.limit_enable", "car.hvac.front_temperature_range",
         "car.hvac.Intelligent_temperature_range", "car.hvac.pm2.5_value",
         "car.hvac.setting.comfort_curve",
-        "car.comfort_setting.chair_memory.auto_enable",
-        "car.configure.ass_memory_setting",
-        "car.comfort_setting.chair_mem_pos_set_action",
-        "car.comfort_setting.chair_mem_pos_set_feedback",
         "car.comfort_setting.driver_seat_ventilation_level",
         "car.comfort_setting.passenger_seat_ventilation_level",
         "car.basic.outside_temp",
@@ -408,6 +400,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 insideTempWasOffline = false;
                 carStartTimestamp    = System.currentTimeMillis();
                 Log.w(TAG, "Partida do carro detectada — AC protegido por 30s");
+
+                // Na partida, o firmware do HVAC reseta comfort_curve e ventilação para os
+                // padrões dele. Zeramos o rastreamento de mudança externa para NÃO interpretar
+                // esse reset como alteração manual do usuário (o que sobrescreveria o modo salvo).
+                // O app re-aplica a config salva na próxima avaliação.
+                lastSentComfortCurve  = null;
+                lastSentDriverVent    = null;
+                lastSentPassengerVent = null;
                 String acEnableStr = dataCache.get(PROP_AC_ENABLE);
                 if (!"1".equals(acEnableStr) && "1".equals(dataCache.get(PROP_AUTO_ENABLE))) {
                     sendHvacCommand(PROP_AC_ENABLE, "1");
@@ -619,10 +619,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         String wadeMode    = dataCache.get(PROP_WADE_MODE);
         final String finalLog = logEntry;
 
-        String chairMemAuto    = dataCache.get(PROP_CHAIR_MEMORY_AUTO);
-        String assMemSetting   = dataCache.get(PROP_ASS_MEMORY_SETTING);
-        String chairMemAction  = dataCache.get(PROP_CHAIR_MEM_POS_ACTION);
-        String chairMemFeedback= dataCache.get(PROP_CHAIR_MEM_POS_FEEDBACK);
         String driverVent      = dataCache.get(PROP_DRIVER_SEAT_VENT);
         String passengerVent   = dataCache.get(PROP_PASSENGER_SEAT_VENT);
         String outsideTemp     = dataCache.get(PROP_OUTSIDE_TEMP);
@@ -631,8 +627,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             ClimateStateHolder.INSTANCE.updateVehicleData(connected, inside, driver, power, auto, outsideTemp);
             ClimateStateHolder.INSTANCE.updateHvacExtras(acEn, frontDef, heating, intSw, limitEn,
                     frontTRange, intTRange, pm25, comfort, wadeMode);
-            ClimateStateHolder.INSTANCE.updateSeatData(chairMemAuto, assMemSetting,
-                    chairMemAction, chairMemFeedback, driverVent, passengerVent);
+            ClimateStateHolder.INSTANCE.updateSeatData(driverVent, passengerVent);
             if (finalLog != null) {
                 ClimateStateHolder.INSTANCE.addLog(finalLog);
             }

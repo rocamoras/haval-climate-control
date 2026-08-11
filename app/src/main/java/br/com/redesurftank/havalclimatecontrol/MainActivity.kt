@@ -126,11 +126,9 @@ fun AppRoot() {
     when (currentScreen) {
         "main"       -> MainControlScreen(
                             onNavigateToDebug      = { currentScreen = "debug" },
-                            onNavigateToAssento    = { currentScreen = "assento" },
                             onNavigateToScreenInfo = { currentScreen = "screeninfo" }
                         )
         "debug"      -> DebugScreen(onNavigateBack = { currentScreen = "main" })
-        "assento"    -> AssentoScreen(onNavigateBack = { currentScreen = "main" })
         "screeninfo" -> ScreenInfoScreen(onNavigateBack = { currentScreen = "main" })
     }
 }
@@ -142,7 +140,6 @@ fun AppRoot() {
 @Composable
 fun MainControlScreen(
     onNavigateToDebug: () -> Unit,
-    onNavigateToAssento: () -> Unit,
     onNavigateToScreenInfo: () -> Unit
 ) {
     val context = LocalContext.current
@@ -294,7 +291,6 @@ fun MainControlScreen(
             devMenuVisible         = devMenuVisible,
             onVersionDoubleTap     = { devMenuVisible = !devMenuVisible },
             onNavigateToDebug      = onNavigateToDebug,
-            onNavigateToAssento    = onNavigateToAssento,
             onNavigateToScreenInfo = onNavigateToScreenInfo
         )
 
@@ -416,7 +412,6 @@ private fun HmiHeader(
     devMenuVisible: Boolean,
     onVersionDoubleTap: () -> Unit,
     onNavigateToDebug: () -> Unit,
-    onNavigateToAssento: () -> Unit,
     onNavigateToScreenInfo: () -> Unit
 ) {
     // Lido aqui (não na MainControlScreen) para que só o cabeçalho recomponha ao conectar/desconectar.
@@ -454,8 +449,7 @@ private fun HmiHeader(
             HmiNavTab(label = "Principal", number = "01", active = true, onClick = {})
             if (devMenuVisible) {
                 HmiNavTab(label = "HVAC",    number = "02", active = false, onClick = onNavigateToDebug)
-                HmiNavTab(label = "Assento", number = "03", active = false, onClick = onNavigateToAssento)
-                HmiNavTab(label = "Tela",    number = "04", active = false, onClick = onNavigateToScreenInfo)
+                HmiNavTab(label = "Tela",    number = "03", active = false, onClick = onNavigateToScreenInfo)
             }
         }
 
@@ -1606,204 +1600,6 @@ fun DebugScreen(onNavigateBack: () -> Unit) {
             titleContentColor = HmiFg,
             textContentColor  = HmiFgMuted
         )
-    }
-}
-
-// ─────────────────────────────────────────────────────────────
-// Assento Screen
-// ─────────────────────────────────────────────────────────────
-
-@Composable
-fun AssentoScreen(onNavigateBack: () -> Unit) {
-    val state = ClimateStateHolder
-
-    data class SeatProp(
-        val label    : String,
-        val propKey  : String,
-        val value    : String,
-        val sendValues: List<String>?,
-        val isBoolean: Boolean = false
-    )
-
-    val props = listOf(
-        SeatProp("chair_memory.auto_enable",        "car.comfort_setting.chair_memory.auto_enable",          state.chairMemoryAutoEnable,  listOf("0", "1"), true),
-        SeatProp("ass_memory_setting",              "car.configure.ass_memory_setting",                      state.assMemorySetting,       listOf("0", "1", "2", "3")),
-        SeatProp("chair_mem_pos_set_action",        "car.comfort_setting.chair_mem_pos_set_action",          state.chairMemPosSetAction,   listOf("1", "2", "3")),
-        SeatProp("chair_mem_pos_set_feedback",      "car.comfort_setting.chair_mem_pos_set_feedback",        state.chairMemPosSetFeedback, null),
-        SeatProp("driver_seat_ventilation_level",   "car.comfort_setting.driver_seat_ventilation_level",     state.driverSeatVentLevel,    null),
-        SeatProp("passenger_seat_ventilation_level","car.comfort_setting.passenger_seat_ventilation_level",  state.passengerSeatVentLevel, null)
-    )
-
-    Column(modifier = Modifier.fillMaxSize().background(HmiBg).padding(16.dp)) {
-
-        Row(
-            modifier              = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment     = Alignment.CenterVertically
-        ) {
-            Row(
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                IconButton(onClick = onNavigateBack, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Voltar", tint = HmiFg, modifier = Modifier.size(20.dp))
-                }
-                Column {
-                    Text("Assento", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = HmiFg)
-                    Text("Monitoramento de memória de assento", fontSize = 17.sp, color = Color(0xFF666666))
-                }
-            }
-            StatusDot(connected = state.vehicleConnected)
-        }
-
-        Spacer(Modifier.height(20.dp))
-
-        props.forEach { prop ->
-            SeatPropCard(
-                label      = prop.label,
-                propKey    = prop.propKey,
-                value      = prop.value,
-                sendValues = prop.sendValues,
-                isBoolean  = prop.isBoolean
-            )
-            Spacer(Modifier.height(10.dp))
-        }
-
-        Spacer(Modifier.height(6.dp))
-
-        Text("Histórico de Ações", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
-        Spacer(Modifier.height(6.dp))
-
-        if (state.seatActionLog.isEmpty()) {
-            Box(
-                modifier         = Modifier.fillMaxWidth().weight(1f)
-                    .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text      = "Nenhum comando enviado ainda.",
-                    color     = Color(0xFF666666),
-                    fontSize  = 13.sp,
-                    textAlign = TextAlign.Center,
-                    modifier  = Modifier.padding(16.dp)
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth().weight(1f)
-                    .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(state.seatActionLog) { entry ->
-                    Text(entry, fontSize = 15.sp, color = Color(0xFFCCCCCC), fontFamily = FontFamily.Monospace)
-                    HorizontalDivider(color = Color(0xFF2A2A2A), thickness = 0.5.dp)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun SeatPropCard(
-    label      : String,
-    propKey    : String,
-    value      : String,
-    sendValues : List<String>?,
-    isBoolean  : Boolean = false
-) {
-    val isUnknown = value == "--"
-    val isOn      = value == "1"
-
-    val valueColor = when {
-        isUnknown          -> Color(0xFF555555)
-        isBoolean && isOn  -> Color(0xFF69F0AE)
-        isBoolean && !isOn -> Color(0xFFB39DDB)
-        else               -> Color(0xFF64B5F6)
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors   = CardDefaults.cardColors(
-            containerColor = if (isBoolean && isOn && !isUnknown) Color(0xFF0D2B0D) else Color(0xFF1E1E1E)
-        ),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(label, fontSize = 17.sp, color = Color(0xFF888888), fontFamily = FontFamily.Monospace)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        if (isUnknown) "--" else if (isBoolean) if (isOn) "ON (1)" else "OFF (0)" else value,
-                        fontSize   = 20.sp,
-                        fontWeight = FontWeight.Bold,
-                        color      = valueColor
-                    )
-                }
-                if (sendValues == null) {
-                    Text("somente leitura", fontSize = 16.sp, color = Color(0xFF444444))
-                }
-            }
-
-            if (sendValues != null) {
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val timeFmt = remember { SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()) }
-                    sendValues.forEach { v ->
-                        val isCurrent = value == v
-                        Button(
-                            onClick = {
-                                ClimateStateHolder.sendCommand(propKey, v)
-                                val display = if (isBoolean) (if (v == "1") "ON" else "OFF") else v
-                                ClimateStateHolder.addSeatLog(timeFmt.format(java.util.Date()) + "  $label → $display")
-                            },
-                            colors         = ButtonDefaults.buttonColors(
-                                containerColor = if (isCurrent) Color(0xFF1B5E20) else Color(0xFF2A2A2A)
-                            ),
-                            shape          = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                            modifier       = Modifier.height(34.dp)
-                        ) {
-                            Text(
-                                text       = if (isBoolean) (if (v == "1") "ON" else "OFF") else v,
-                                fontSize   = 13.sp,
-                                color      = if (isCurrent) Color(0xFF69F0AE) else Color(0xFF888888),
-                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun SeatValueCard(modifier: Modifier = Modifier, label: String, value: String) {
-    Card(
-        modifier = modifier,
-        colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
-        shape    = RoundedCornerShape(12.dp)
-    ) {
-        Column(
-            modifier            = Modifier.padding(14.dp).fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(label, fontSize = 16.sp, color = Color(0xFF888888), textAlign = TextAlign.Center, fontFamily = FontFamily.Monospace)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text       = value,
-                fontSize   = 22.sp,
-                fontWeight = FontWeight.Bold,
-                color      = if (value == "--") Color(0xFF555555) else Color(0xFF64B5F6),
-                textAlign  = TextAlign.Center
-            )
-        }
     }
 }
 
