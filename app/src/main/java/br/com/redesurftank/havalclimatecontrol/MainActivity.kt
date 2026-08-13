@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import br.com.redesurftank.havalclimatecontrol.ui.theme.HavalClimateControlTheme
+import br.com.redesurftank.havalclimatecontrol.utils.FridaUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -66,6 +67,7 @@ private const val KEY_AUTO_CONTROL         = "auto_control_enabled"
 private const val KEY_LAST_UPDATE_CHECK    = "last_update_check_ms"
 private const val KEY_SEAT_VENT_AUTO       = "seat_vent_auto_enabled"
 private const val KEY_COMFORT_MODE         = "comfort_mode"
+private const val KEY_REAL_OUTSIDE_TEMP    = "real_outside_temp_enabled"
 private const val UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
 // ─────────────────────────────────────────────────────────────
@@ -126,10 +128,12 @@ fun AppRoot() {
     when (currentScreen) {
         "main"       -> MainControlScreen(
                             onNavigateToDebug      = { currentScreen = "debug" },
-                            onNavigateToScreenInfo = { currentScreen = "screeninfo" }
+                            onNavigateToScreenInfo = { currentScreen = "screeninfo" },
+                            onNavigateToSettings   = { currentScreen = "settings" }
                         )
         "debug"      -> DebugScreen(onNavigateBack = { currentScreen = "main" })
         "screeninfo" -> ScreenInfoScreen(onNavigateBack = { currentScreen = "main" })
+        "settings"   -> SettingsScreen(onNavigateBack = { currentScreen = "main" })
     }
 }
 
@@ -140,7 +144,8 @@ fun AppRoot() {
 @Composable
 fun MainControlScreen(
     onNavigateToDebug: () -> Unit,
-    onNavigateToScreenInfo: () -> Unit
+    onNavigateToScreenInfo: () -> Unit,
+    onNavigateToSettings: () -> Unit
 ) {
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
@@ -167,6 +172,9 @@ fun MainControlScreen(
     var comfortMode by remember {
         mutableStateOf(prefs.getString(KEY_COMFORT_MODE, "AUTO") ?: "AUTO")
     }
+    var realOutsideTempEnabled by remember {
+        mutableStateOf(prefs.getBoolean(KEY_REAL_OUTSIDE_TEMP, false))
+    }
     var devMenuVisible by remember { mutableStateOf(false) }
 
     val permLauncher = rememberLauncherForActivityResult(
@@ -177,6 +185,7 @@ fun MainControlScreen(
         state.autoControlEnabled    = autoControlEnabled
         state.seatVentAutoEnabled   = seatVentAutoEnabled
         state.comfortMode           = comfortMode
+        state.realOutsideTempEnabled = realOutsideTempEnabled
 
         // Quando o serviço detecta alteração externa na ventilação, desativa AUTO e persiste
         state.onExternalVentChange = { _ ->
@@ -291,7 +300,8 @@ fun MainControlScreen(
             devMenuVisible         = devMenuVisible,
             onVersionDoubleTap     = { devMenuVisible = !devMenuVisible },
             onNavigateToDebug      = onNavigateToDebug,
-            onNavigateToScreenInfo = onNavigateToScreenInfo
+            onNavigateToScreenInfo = onNavigateToScreenInfo,
+            onNavigateToSettings   = onNavigateToSettings
         )
 
         if (updateAvailable) {
@@ -412,7 +422,8 @@ private fun HmiHeader(
     devMenuVisible: Boolean,
     onVersionDoubleTap: () -> Unit,
     onNavigateToDebug: () -> Unit,
-    onNavigateToScreenInfo: () -> Unit
+    onNavigateToScreenInfo: () -> Unit,
+    onNavigateToSettings: () -> Unit
 ) {
     // Lido aqui (não na MainControlScreen) para que só o cabeçalho recomponha ao conectar/desconectar.
     val connected = ClimateStateHolder.vehicleConnected
@@ -492,6 +503,22 @@ private fun HmiHeader(
                     detectTapGestures(onDoubleTap = { onVersionDoubleTap() })
                 }
             )
+            // Engrenagem — acesso ao menu de Configurações (sempre visível)
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .background(HmiSurface, RoundedCornerShape(8.dp))
+                    .border(1.dp, HmiBorderStr, RoundedCornerShape(8.dp))
+                    .clickable(onClick = onNavigateToSettings),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Settings,
+                    contentDescription = "Configurações",
+                    tint     = HmiFgMuted,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }
@@ -1690,6 +1717,109 @@ fun ScreenInfoScreen(onNavigateBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Settings Screen
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+fun SettingsScreen(onNavigateBack: () -> Unit) {
+    val context = LocalContext.current
+    val state   = ClimateStateHolder
+    val prefs   = remember { context.getSharedPreferences(UI_PREFS, Context.MODE_PRIVATE) }
+
+    var realOutsideTempEnabled by remember {
+        mutableStateOf(prefs.getBoolean(KEY_REAL_OUTSIDE_TEMP, false))
+    }
+    var showHelp by remember { mutableStateOf(false) }
+    val fridaAvailable = remember { FridaUtils.fridaToolsEmbedded() }
+
+    Column(modifier = Modifier.fillMaxSize().background(HmiBg).padding(20.dp)) {
+
+        // Header
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            IconButton(onClick = onNavigateBack, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Voltar", tint = HmiFg, modifier = Modifier.size(20.dp))
+            }
+            Column {
+                Text("Configurações", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = HmiFg)
+                Text("Preferências do app", fontSize = 17.sp, color = Color(0xFF666666))
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+            shape    = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment     = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier              = Modifier.weight(1f),
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            "Ativar Temperatura Externa Real (UI)",
+                            fontSize   = 17.sp,
+                            fontWeight = FontWeight.Medium,
+                            color      = HmiFg
+                        )
+                        IconButton(onClick = { showHelp = true }, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = "Ajuda",
+                                tint     = HmiFgMuted,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Switch(
+                        checked         = realOutsideTempEnabled,
+                        onCheckedChange = { enabled ->
+                            realOutsideTempEnabled       = enabled
+                            state.realOutsideTempEnabled = enabled
+                            prefs.edit().putBoolean(KEY_REAL_OUTSIDE_TEMP, enabled).apply()
+                            state.onRealOutsideTempToggle?.onToggle(enabled)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor   = Color.White,
+                            checkedTrackColor   = HmiAccent,
+                            uncheckedThumbColor = HmiFgMuted,
+                            uncheckedTrackColor = HmiSurface
+                        )
+                    )
+                }
+                if (!fridaAvailable) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "⚠ Recursos do Frida ausentes neste APK (build debug). Esta opção só funciona no APK do Release/CI.",
+                        fontSize = 13.sp,
+                        color    = Color(0xFFFFB74D)
+                    )
+                }
+            }
+        }
+    }
+
+    if (showHelp) {
+        AlertDialog(
+            onDismissRequest  = { showHelp = false },
+            title             = { Text("Temperatura Externa Real (UI)") },
+            text              = { Text("Ativando essa opção irá desabilitar o serviço nativo da central de previsão do tempo e será mostrado a temperatura externa real.") },
+            confirmButton     = { TextButton(onClick = { showHelp = false }) { Text("OK") } },
+            containerColor    = Color(0xFF1E1E1E),
+            titleContentColor = HmiFg,
+            textContentColor  = HmiFgMuted
+        )
     }
 }
 

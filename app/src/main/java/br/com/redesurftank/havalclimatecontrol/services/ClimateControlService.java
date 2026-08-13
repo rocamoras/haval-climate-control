@@ -40,6 +40,7 @@ import br.com.redesurftank.havalclimatecontrol.App;
 import br.com.redesurftank.havalclimatecontrol.ClimateStateHolder;
 import br.com.redesurftank.havalclimatecontrol.broadcastReceivers.RestartReceiver;
 import br.com.redesurftank.havalclimatecontrol.utils.IPTablesUtils;
+import br.com.redesurftank.havalclimatecontrol.utils.FridaUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.ShizukuUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.TelnetClientWrapper;
 import rikka.shizuku.Shizuku;
@@ -56,7 +57,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String KEY_SHIZUKU_LIB     = "shizuku_lib_location";
     private static final String KEY_INSTALLED_CHECK = "self_installation_integrity_check";
 
-    private static final String HVAC_PACKAGE_NAME   = "com.beantechs.hvac";
+    private static final String HVAC_PACKAGE_NAME    = "com.beantechs.hvac";
+    private static final String WEATHER_PACKAGE_NAME = "com.beantechs.weatherservice";
+    private static final long   REAL_TEMP_WATCHDOG_MS = 10_000; // re-injeta o hook Frida se cair / SystemUI reiniciar
     private static final long   HVAC_RESUME_DELAY_MS = 300;
     private static final long   EVAL_DEBOUNCE_MS     = 50;     // coalesce bursts de onDataChanged numa única avaliação
     private static final long   IPTABLES_REFRESH_MS  = 60_000; // re-assert da regra iptables (idempotente, antes 15s)
@@ -131,6 +134,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private boolean  isHvacSuspended    = false;
     private Runnable resumeHvacRunnable = null;
+
+    // Temperatura Externa Real (UI) — injeção Frida no SystemUI + watchdog de 10s
+    private volatile boolean realTempEnabled = false;
+    private String  injectedSystemUiPid      = "";
+    private final Runnable realTempWatchdogRunnable = this::realTempWatchdogTick;
     private final Runnable acOffCheckRunnable = this::evaluateClimateControl;
     // Instância única e estável para coalescência via removeCallbacks/postDelayed.
     // Mantida SEPARADA de acOffCheckRunnable para não cancelar o recheck de 62s do AC.
@@ -361,6 +369,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             Log.e(TAG, "Error sending command: " + e.getMessage(), e);
                         }
                     });
+
+            // Configurações — Temperatura Externa Real (UI): registra callback UI → serviço.
+            ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(enabled ->
+                    backgroundHandler.post(() -> applyRealOutsideTemp(enabled)));
+            // Reaplica o estado persistido (default é false — em start limpo nada acontece).
+            if (ClimateStateHolder.INSTANCE.getRealOutsideTempEnabled()) {
+                backgroundHandler.post(() -> applyRealOutsideTemp(true));
+            }
 
             Shizuku.addBinderDeadListener(this);
             pushState(true, null);
@@ -684,6 +700,53 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         backgroundHandler.postDelayed(resumeHvacRunnable, HVAC_RESUME_DELAY_MS);
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // Temperatura Externa Real (UI) — injeção Frida no SystemUI
+    // ─────────────────────────────────────────────────────────────
+
+    /** (Des)ativa a exibição da temperatura externa real na barra da central.
+     *  Roda no backgroundHandler. */
+    private void applyRealOutsideTemp(boolean enabled) {
+        realTempEnabled = enabled;
+        backgroundHandler.removeCallbacks(realTempWatchdogRunnable);
+        if (enabled) {
+            // Desativa o serviço nativo de previsão do tempo da central.
+            ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "disable-user", "--user", "0", WEATHER_PACKAGE_NAME});
+            ShizukuUtils.runCommandAndGetOutput(new String[]{"am", "force-stop", WEATHER_PACKAGE_NAME});
+            // Injeta o hook que lê o sensor real e repinta a barra.
+            String msg = FridaUtils.startAndInject();
+            injectedSystemUiPid = FridaUtils.systemUiPid();
+            Log.w(TAG, "[realtemp] ativado: " + msg + " (systemui pid=" + injectedSystemUiPid + ")");
+            backgroundHandler.postDelayed(realTempWatchdogRunnable, REAL_TEMP_WATCHDOG_MS);
+        } else {
+            // Para a injeção e reativa o serviço nativo de previsão do tempo.
+            String msg = FridaUtils.stop();
+            injectedSystemUiPid = "";
+            ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "enable", WEATHER_PACKAGE_NAME});
+            Log.w(TAG, "[realtemp] desativado: " + msg);
+        }
+    }
+
+    /** Watchdog: a cada 10s re-injeta o hook se ele caiu ou o SystemUI reiniciou. */
+    private void realTempWatchdogTick() {
+        if (!realTempEnabled) return;
+        try {
+            String currentPid = FridaUtils.systemUiPid();
+            boolean systemUiRestarted = !currentPid.isEmpty() && !currentPid.equals(injectedSystemUiPid);
+            if (systemUiRestarted || !FridaUtils.isInjectionAlive()) {
+                Log.w(TAG, "[realtemp] watchdog re-injetando (restart=" + systemUiRestarted + ")");
+                FridaUtils.startAndInject();
+                injectedSystemUiPid = FridaUtils.systemUiPid();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "[realtemp] watchdog erro: " + e.getMessage(), e);
+        } finally {
+            if (realTempEnabled) {
+                backgroundHandler.postDelayed(realTempWatchdogRunnable, REAL_TEMP_WATCHDOG_MS);
+            }
+        }
+    }
+
     private void createNotificationChannel() {
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID, "Controle Climático", NotificationManager.IMPORTANCE_LOW);
@@ -695,6 +758,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     @Override
     public void onDestroy() {
+        backgroundHandler.removeCallbacks(realTempWatchdogRunnable);
+        ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(null);
         if (handlerThread != null) handlerThread.quitSafely();
         isServiceRunning = false;
         Shizuku.removeBinderReceivedListener(this::onShizukuBinderReceived);

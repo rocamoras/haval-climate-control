@@ -38,6 +38,17 @@ object ClimateStateHolder {
     var seatVentAutoEnabled    by mutableStateOf(true)
     var comfortMode            by mutableStateOf("AUTO")
 
+    // Configurações — Temperatura Externa Real (UI). Espelho lido pelo serviço.
+    var realOutsideTempEnabled by mutableStateOf(false)
+
+    /** Callback UI → serviço: acionado quando a opção "Temperatura Externa Real" é alternada.
+     *  fun interface para permitir lambda de Java (o serviço). */
+    fun interface RealTempToggleCallback {
+        fun onToggle(enabled: Boolean)
+    }
+
+    @Volatile var onRealOutsideTempToggle: RealTempToggleCallback? = null
+
     // Callbacks invocados pelo serviço (via mainHandler) quando uma mudança externa é detectada
     @Volatile var onExternalVentChange:    ((String) -> Unit)? = null
     @Volatile var onExternalComfortChange: ((String) -> Unit)? = null
