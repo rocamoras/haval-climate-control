@@ -57,6 +57,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String KEY_SHIZUKU_LIB     = "shizuku_lib_location";
     private static final String KEY_INSTALLED_CHECK = "self_installation_integrity_check";
 
+    // Prefs da UI (climate_ui_prefs) — lidos direto pelo serviço no boot, pois o
+    // espelho em ClimateStateHolder só é populado quando a Activity é aberta.
+    private static final String UI_PREFS_NAME         = "climate_ui_prefs";
+    private static final String KEY_REAL_OUTSIDE_TEMP = "real_outside_temp_enabled";
+
     private static final String HVAC_PACKAGE_NAME    = "com.beantechs.hvac";
     private static final String WEATHER_PACKAGE_NAME = "com.beantechs.weatherservice";
     private static final long   REAL_TEMP_WATCHDOG_MS = 10_000; // re-injeta o hook Frida se cair / SystemUI reiniciar
@@ -373,8 +378,19 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             // Configurações — Temperatura Externa Real (UI): registra callback UI → serviço.
             ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(enabled ->
                     backgroundHandler.post(() -> applyRealOutsideTemp(enabled)));
-            // Reaplica o estado persistido (default é false — em start limpo nada acontece).
-            if (ClimateStateHolder.INSTANCE.getRealOutsideTempEnabled()) {
+            // Reaplica o estado PERSISTIDO. Lê direto do climate_ui_prefs porque, no boot
+            // do carro (antes da Activity abrir), o espelho em ClimateStateHolder ainda é
+            // o default false — daí a injeção não acontecia até alternar manualmente.
+            boolean realTempWanted = false;
+            try {
+                realTempWanted = App.getContext()
+                        .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+                        .getBoolean(KEY_REAL_OUTSIDE_TEMP, false);
+            } catch (Exception e) {
+                Log.w(TAG, "Falha lendo pref real_outside_temp: " + e.getMessage());
+            }
+            if (realTempWanted) {
+                ClimateStateHolder.INSTANCE.setRealOutsideTempEnabled(true);
                 backgroundHandler.post(() -> applyRealOutsideTemp(true));
             }
 
