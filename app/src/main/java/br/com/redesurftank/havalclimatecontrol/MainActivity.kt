@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import br.com.redesurftank.havalclimatecontrol.ui.theme.HavalClimateControlTheme
 import br.com.redesurftank.havalclimatecontrol.utils.FridaUtils
+import br.com.redesurftank.havalclimatecontrol.utils.SystemPropsUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -92,6 +93,52 @@ private val HmiBorderStr  = Color(0x1FFFFFFF)
 // ─────────────────────────────────────────────────────────────
 private val airflowDashInterval = floatArrayOf(12f, 16f)
 private val comfortModeList      = listOf("AUTO", "SUAVE", "NORMAL", "FORTE")
+
+// ─────────────────────────────────────────────────────────────
+// PM2.5 — enumeradores extraídos do com.beantechs.hvac
+//
+// HVACValue.EXCHANGE e HVACValue.QUALITY_DESCRIBE. São os breakpoints de PM2.5 do
+// AQI chinês (GB 3095-2012 / HJ 633-2012), por isso "Bom" só começa abaixo de 75.
+// ─────────────────────────────────────────────────────────────
+private val PM25_EXCHANGE = intArrayOf(250, 150, 115, 75, 35, -1)
+private val PM25_LABELS   = arrayOf(
+    "Poluição séria", "Poluição pesada", "Poluição média",
+    "Poluição leve",  "Bom",             "Excelente"
+)
+private val PM25_RANGES   = arrayOf("> 250", "151–250", "116–150", "76–115", "36–75", "0–35")
+private val PM25_COLORS   = arrayOf(
+    Color(0xFFFF5252), Color(0xFFFF7043), Color(0xFFFFA726),
+    Color(0xFFFFD54F), Color(0xFF9CCC65), Color(0xFF4CAF50)
+)
+
+/**
+ * Reproduz MainFragment.bindLiveData$lambda-36 do app OEM: procura o PRIMEIRO índice
+ * i em que `valor > EXCHANGE[i]`. Como o último elemento é -1, um valor de -1 (o
+ * default de getPM() quando o fetch volta vazio) não casa com nenhuma faixa — é o
+ * caminho de "sem dado", em que o OEM simplesmente não escreve nada na tela.
+ *
+ * @return índice 0..5, ou -1 para sem dado / valor não numérico.
+ */
+private fun pm25BandIndex(raw: String): Int {
+    val v = raw.toIntOrNull() ?: return -1
+    for (i in PM25_EXCHANGE.indices) if (v > PM25_EXCHANGE[i]) return i
+    return -1
+}
+
+// ─────────────────────────────────────────────────────────────
+// System properties de configuração de variante (persist.vendor.gwm.cfg.*)
+// ─────────────────────────────────────────────────────────────
+
+/** Gate de HVACSystemPropertiesUtil.hasAutoDemist(): mostra a linha
+ *  "Desembaçador dianteiro automático" nas Configurações do HVAC quando == 1. */
+private const val PROP_AUTO_DEMIST = "persist.vendor.gwm.cfg.indoor.automatic.demisting"
+
+/** Gate de hasAirPMSystem(): o HVAC só exibe a qualidade do ar quando ∈ {2,3,5}. */
+private const val PROP_AIR_PURIFIER = "persist.vendor.gwm.cfg.air.purifier"
+
+private const val HVAC_PKG = "com.beantechs.hvac"
+
+private val pm25TimeFmt = SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
 
 /** Desenha um traço de airflow reaproveitando o mesmo Path/Paint (zero alocação por traço). */
 private fun drawAirflow(
@@ -1532,43 +1579,53 @@ fun DebugScreen(onNavigateBack: () -> Unit) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             HvacReadOnly(Modifier.weight(1f), "front_temp_range",  state.frontTempRange)
             HvacReadOnly(Modifier.weight(1f), "intelligent_range", state.intelligentTempRange)
-            HvacReadOnly(Modifier.weight(1f), "pm2.5_value",       state.pm25Value)
             HvacReadOnly(Modifier.weight(1f), "comfort_curve",     state.comfortCurve)
         }
 
         Spacer(Modifier.height(10.dp))
 
-        Text("Histórico de Ações", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
-        Spacer(Modifier.height(6.dp))
-
-        if (state.actionLog.isEmpty()) {
-            Box(
-                modifier         = Modifier.fillMaxWidth().weight(1f)
-                    .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text      = if (state.vehicleConnected)
-                        "Nenhuma ação registrada ainda.\nAC será controlado quando o modo Automático estiver ativo."
-                    else "Aguardando conexão com o veículo...",
-                    color     = Color(0xFF666666),
-                    fontSize  = 13.sp,
-                    textAlign = TextAlign.Center,
-                    modifier  = Modifier.padding(16.dp)
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth().weight(1f)
-                    .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(state.actionLog) { entry ->
-                    Text(entry, fontSize = 15.sp, color = Color(0xFFCCCCCC), fontFamily = FontFamily.Monospace)
-                    HorizontalDivider(color = Color(0xFF2A2A2A), thickness = 0.5.dp)
+        // A tela é 1792×660 — larga e baixa. Em vez de empilhar mais seções (que
+        // forçariam scroll vertical), o rodapé vira três colunas lado a lado.
+        Row(
+            modifier              = Modifier.fillMaxWidth().weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Column(modifier = Modifier.weight(1.1f).fillMaxHeight()) {
+                Text("Histórico de Ações", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
+                Spacer(Modifier.height(6.dp))
+                if (state.actionLog.isEmpty()) {
+                    Box(
+                        modifier         = Modifier.fillMaxWidth().weight(1f)
+                            .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text      = if (state.vehicleConnected)
+                                "Nenhuma ação registrada ainda.\nAC será controlado quando o modo Automático estiver ativo."
+                            else "Aguardando conexão com o veículo...",
+                            color     = Color(0xFF666666),
+                            fontSize  = 13.sp,
+                            textAlign = TextAlign.Center,
+                            modifier  = Modifier.padding(16.dp)
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().weight(1f)
+                            .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(state.actionLog) { entry ->
+                            Text(entry, fontSize = 15.sp, color = Color(0xFFCCCCCC), fontFamily = FontFamily.Monospace)
+                            HorizontalDivider(color = Color(0xFF2A2A2A), thickness = 0.5.dp)
+                        }
+                    }
                 }
             }
+
+            Pm25Panel(modifier = Modifier.weight(1.15f).fillMaxHeight())
+            VendorPropsPanel(modifier = Modifier.weight(1f).fillMaxHeight())
         }
     }
 
@@ -1960,6 +2017,310 @@ fun HvacToggle(label: String, value: String, propKey: String) {
                 fontWeight = FontWeight.Bold,
                 color      = textColor
             )
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// PM2.5 — leitura crua + faixa do enumerador OEM + histórico
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+fun Pm25Panel(modifier: Modifier = Modifier) {
+    val state = ClimateStateHolder
+    val raw   = state.pm25Value
+    val band  = pm25BandIndex(raw)
+    val hasData = band >= 0
+
+    val valueColor = if (hasData) PM25_COLORS[band] else Color(0xFF666666)
+    val bandLabel  = if (hasData) PM25_LABELS[band] else "sem dado"
+
+    Column(modifier = modifier) {
+        Row(
+            modifier              = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment     = Alignment.CenterVertically
+        ) {
+            Text("PM2.5 / Qualidade do ar", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
+            Text(
+                text     = "limpar",
+                fontSize = 14.sp,
+                color    = Color(0xFF4FC3F7),
+                modifier = Modifier.clickable { state.clearPm25History() }
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+
+        Column(
+            modifier = Modifier.fillMaxWidth().weight(1f)
+                .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
+                .padding(10.dp)
+        ) {
+            // Valor cru + faixa
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    text       = if (raw == "--") "--" else raw,
+                    fontSize   = 34.sp,
+                    fontWeight = FontWeight.Bold,
+                    color      = valueColor,
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(Modifier.width(4.dp))
+                Text("µg/m³", fontSize = 14.sp, color = Color(0xFF777777), modifier = Modifier.padding(bottom = 5.dp))
+                Spacer(Modifier.weight(1f))
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(bandLabel, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = valueColor)
+                    Text(
+                        text     = if (hasData) "idx $band · ${PM25_RANGES[band]}" else "fora de todas as faixas",
+                        fontSize = 13.sp,
+                        color    = Color(0xFF777777)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text       = "min ${fmtPm(state.pm25Min)}   max ${fmtPm(state.pm25Max)}   amostras ${state.pm25History.size}",
+                fontSize   = 13.sp,
+                color      = Color(0xFF777777),
+                fontFamily = FontFamily.Monospace
+            )
+            Spacer(Modifier.height(8.dp))
+
+            // Tabela das 6 faixas, com a ativa destacada
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                for (i in PM25_LABELS.indices) {
+                    val active = i == band
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .background(
+                                if (active) PM25_COLORS[i].copy(alpha = 0.18f) else Color.Transparent,
+                                RoundedCornerShape(4.dp)
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(Modifier.size(8.dp).background(PM25_COLORS[i], CircleShape))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text       = PM25_RANGES[i],
+                            fontSize   = 13.sp,
+                            color      = if (active) PM25_COLORS[i] else Color(0xFF888888),
+                            fontFamily = FontFamily.Monospace,
+                            modifier   = Modifier.width(70.dp)
+                        )
+                        Text(
+                            text       = PM25_LABELS[i],
+                            fontSize   = 13.sp,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                            color      = if (active) PM25_COLORS[i] else Color(0xFF888888)
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider(color = Color(0xFF2A2A2A), thickness = 0.5.dp)
+            Spacer(Modifier.height(6.dp))
+
+            if (state.pm25History.isEmpty()) {
+                Text("Aguardando amostras…", fontSize = 13.sp, color = Color(0xFF666666))
+            } else {
+                LazyColumn(
+                    modifier            = Modifier.fillMaxWidth().weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    items(state.pm25History) { s ->
+                        val b = pm25BandIndex(s.value.toString())
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text       = pm25TimeFmt.format(java.util.Date(s.atMs)),
+                                fontSize   = 13.sp,
+                                color      = Color(0xFF666666),
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text       = s.value.toString().padStart(4),
+                                fontSize   = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color      = if (b >= 0) PM25_COLORS[b] else Color(0xFF666666),
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text     = if (b >= 0) PM25_LABELS[b] else "sem dado",
+                                fontSize = 13.sp,
+                                color    = Color(0xFF999999)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun fmtPm(v: Int) = if (v < 0) "--" else v.toString()
+
+// ─────────────────────────────────────────────────────────────
+// System properties de variante — leitura e escrita via Shizuku
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+fun VendorPropsPanel(modifier: Modifier = Modifier) {
+    val scope = rememberCoroutineScope()
+
+    var demist    by remember { mutableStateOf("…") }
+    var purifier  by remember { mutableStateOf("…") }
+    var busy      by remember { mutableStateOf(false) }
+    var feedback  by remember { mutableStateOf("") }
+
+    fun reload() {
+        scope.launch(Dispatchers.IO) {
+            val d = SystemPropsUtils.get(PROP_AUTO_DEMIST)
+            val p = SystemPropsUtils.get(PROP_AIR_PURIFIER)
+            withContext(Dispatchers.Main) {
+                demist   = d.ifEmpty { "<vazio>" }
+                purifier = p.ifEmpty { "<vazio>" }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { reload() }
+
+    fun writeDemist(value: String) {
+        busy = true; feedback = ""
+        scope.launch(Dispatchers.IO) {
+            val err = SystemPropsUtils.set(PROP_AUTO_DEMIST, value)
+            withContext(Dispatchers.Main) {
+                busy = false
+                feedback = err ?: "Gravado = $value. Reinicie o app HVAC para ele reler."
+                ClimateStateHolder.addLog(
+                    "[prop] indoor.automatic.demisting → $value ${if (err == null) "OK" else "FALHOU: $err"}"
+                )
+                reload()
+            }
+        }
+    }
+
+    Column(modifier = modifier) {
+        Row(
+            modifier              = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment     = Alignment.CenterVertically
+        ) {
+            Text("Config de variante", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
+            Text(
+                text     = "reler",
+                fontSize = 14.sp,
+                color    = Color(0xFF4FC3F7),
+                modifier = Modifier.clickable(enabled = !busy) { reload() }
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+
+        Column(
+            modifier = Modifier.fillMaxWidth().weight(1f)
+                .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
+                .padding(10.dp)
+        ) {
+            Text("indoor.automatic.demisting", fontSize = 14.sp, color = Color(0xFFCCCCCC), fontFamily = FontFamily.Monospace)
+            Text("Desembaçador dianteiro automático", fontSize = 13.sp, color = Color(0xFF777777))
+            Spacer(Modifier.height(6.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text       = demist,
+                    fontSize   = 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    color      = when (demist) {
+                        "1"  -> Color(0xFF69F0AE)
+                        "0"  -> Color(0xFFB39DDB)
+                        else -> Color(0xFF666666)
+                    },
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(Modifier.weight(1f))
+                Button(
+                    onClick        = { writeDemist("0") },
+                    enabled        = !busy && demist != "0",
+                    colors         = ButtonDefaults.buttonColors(containerColor = Color(0xFF311B92)),
+                    shape          = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) { Text("0 · off", fontSize = 15.sp) }
+                Spacer(Modifier.width(6.dp))
+                Button(
+                    onClick        = { writeDemist("1") },
+                    enabled        = !busy && demist != "1",
+                    colors         = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B5E20)),
+                    shape          = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) { Text("1 · on", fontSize = 15.sp) }
+            }
+
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "hasAutoDemist() == 1 revela a linha nas Configurações do app HVAC. " +
+                "A property é lida só no init do ViewModel — sem reiniciar o HVAC nada muda na tela dele.",
+                fontSize = 12.sp,
+                color    = Color(0xFF666666)
+            )
+
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    busy = true; feedback = ""
+                    scope.launch(Dispatchers.IO) {
+                        val err = SystemPropsUtils.restartPackage(HVAC_PKG)
+                        withContext(Dispatchers.Main) {
+                            busy = false
+                            feedback = err ?: "HVAC encerrado — abra o app de clima do carro para ver o efeito."
+                        }
+                    }
+                },
+                enabled        = !busy,
+                colors         = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0)),
+                shape          = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                modifier       = Modifier.fillMaxWidth()
+            ) { Text("Reiniciar app HVAC (force-stop)", fontSize = 15.sp) }
+
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(color = Color(0xFF2A2A2A), thickness = 0.5.dp)
+            Spacer(Modifier.height(8.dp))
+
+            Text("air.purifier", fontSize = 14.sp, color = Color(0xFFCCCCCC), fontFamily = FontFamily.Monospace)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text       = purifier,
+                    fontSize   = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color      = Color(0xFFFFB74D),
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text     = if (purifier in listOf("2", "3", "5"))
+                        "tem sensor de PM2.5" else "sem sensor de PM2.5",
+                    fontSize = 13.sp,
+                    color    = if (purifier in listOf("2", "3", "5")) Color(0xFF9CCC65) else Color(0xFF888888)
+                )
+            }
+            Text(
+                "Somente leitura. hasAirPMSystem() exige ∈ {2,3,5} — é o que decide se o HVAC mostra a qualidade do ar.",
+                fontSize = 12.sp,
+                color    = Color(0xFF666666)
+            )
+
+            if (feedback.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(feedback, fontSize = 13.sp, color = Color(0xFF4FC3F7))
+            }
+            if (!SystemPropsUtils.isShizukuReady()) {
+                Spacer(Modifier.height(6.dp))
+                Text("⚠ Shizuku indisponível — escrita desabilitada.", fontSize = 13.sp, color = Color(0xFFFF7043))
+            }
         }
     }
 }

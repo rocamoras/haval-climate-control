@@ -32,6 +32,38 @@ object ClimateStateHolder {
     var pm25Value             by mutableStateOf("--")
     var comfortCurve          by mutableStateOf("--")
 
+    // ── Telemetria do sensor de PM2.5 ────────────────────────────────────────
+    // Alimentada por updateHvacExtras (ou seja, pelo serviço), não pela tela — assim
+    // o histórico continua sendo coletado com a tela de debug fechada.
+
+    data class Pm25Sample(val value: Int, val atMs: Long)
+
+    val pm25History = mutableStateListOf<Pm25Sample>()
+    var pm25Min by mutableStateOf(-1)
+    var pm25Max by mutableStateOf(-1)
+
+    private const val PM25_HISTORY_MAX = 60
+
+    /** Registra a amostra só quando o valor numérico muda — o serviço republica o
+     *  cache inteiro a cada onDataChanged, e sem esse filtro o histórico viraria
+     *  dezenas de linhas idênticas. -1 (sem dado) não entra em min/max. */
+    private fun recordPm25(raw: String?) {
+        val v = raw?.toIntOrNull() ?: return
+        if (pm25History.firstOrNull()?.value == v) return
+        pm25History.add(0, Pm25Sample(v, System.currentTimeMillis()))
+        if (pm25History.size > PM25_HISTORY_MAX) pm25History.removeAt(pm25History.lastIndex)
+        if (v >= 0) {
+            if (pm25Min < 0 || v < pm25Min) pm25Min = v
+            if (pm25Max < 0 || v > pm25Max) pm25Max = v
+        }
+    }
+
+    fun clearPm25History() {
+        pm25History.clear()
+        pm25Min = -1
+        pm25Max = -1
+    }
+
     // Seat properties
     var driverSeatVentLevel    by mutableStateOf("--")
     var passengerSeatVentLevel by mutableStateOf("--")
@@ -125,6 +157,7 @@ object ClimateStateHolder {
         pm25Value            = pm25         ?: "--"
         comfortCurve         = comfort      ?: "--"
         wadeModeEnable       = wadeMode     ?: "--"
+        recordPm25(pm25)
     }
 
     fun updateSeatData(
