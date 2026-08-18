@@ -61,10 +61,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // espelho em ClimateStateHolder só é populado quando a Activity é aberta.
     private static final String UI_PREFS_NAME         = "climate_ui_prefs";
     private static final String KEY_REAL_OUTSIDE_TEMP = "real_outside_temp_enabled";
+    private static final String KEY_HOME_CARD         = "home_card_enabled";
 
     private static final String HVAC_PACKAGE_NAME    = "com.beantechs.hvac";
     private static final String WEATHER_PACKAGE_NAME = "com.beantechs.weatherservice";
     private static final long   REAL_TEMP_WATCHDOG_MS = 10_000; // re-injeta o hook Frida se cair / SystemUI reiniciar
+    private static final long   HOME_CARD_WATCHDOG_MS = 10_000; // idem para a MediaCenter
+    // Janela para o script restaurar a fileira original antes de matarmos o injetor.
+    private static final long   HOME_CARD_RESTORE_MS  = 3_000;
     private static final long   HVAC_RESUME_DELAY_MS = 300;
     private static final long   EVAL_DEBOUNCE_MS     = 50;     // coalesce bursts de onDataChanged numa única avaliação
     private static final long   IPTABLES_REFRESH_MS  = 60_000; // re-assert da regra iptables (idempotente, antes 15s)
@@ -144,6 +148,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private volatile boolean realTempEnabled = false;
     private String  injectedSystemUiPid      = "";
     private final Runnable realTempWatchdogRunnable = this::realTempWatchdogTick;
+
+    // Card na Home (MediaCenter) — injeção Frida + watchdog de 10s
+    private volatile boolean homeCardEnabled    = false;
+    private String  injectedMediaCenterPid      = "";
+    private final Runnable homeCardWatchdogRunnable = this::homeCardWatchdogTick;
     private final Runnable acOffCheckRunnable = this::evaluateClimateControl;
     // Instância única e estável para coalescência via removeCallbacks/postDelayed.
     // Mantida SEPARADA de acOffCheckRunnable para não cancelar o recheck de 62s do AC.
@@ -392,6 +401,22 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             if (realTempWanted) {
                 ClimateStateHolder.INSTANCE.setRealOutsideTempEnabled(true);
                 backgroundHandler.post(() -> applyRealOutsideTemp(true));
+            }
+
+            // Configurações — Card na Home: mesmo esquema (callback + pref persistida).
+            ClimateStateHolder.INSTANCE.setOnHomeCardToggle(enabled ->
+                    backgroundHandler.post(() -> applyHomeCard(enabled)));
+            boolean homeCardWanted = false;
+            try {
+                homeCardWanted = App.getContext()
+                        .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+                        .getBoolean(KEY_HOME_CARD, false);
+            } catch (Exception e) {
+                Log.w(TAG, "Falha lendo pref home_card: " + e.getMessage());
+            }
+            if (homeCardWanted) {
+                ClimateStateHolder.INSTANCE.setHomeCardEnabled(true);
+                backgroundHandler.post(() -> applyHomeCard(true));
             }
 
             Shizuku.addBinderDeadListener(this);
@@ -759,6 +784,52 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         } finally {
             if (realTempEnabled) {
                 backgroundHandler.postDelayed(realTempWatchdogRunnable, REAL_TEMP_WATCHDOG_MS);
+            }
+        }
+    }
+
+    // ─────────────────────────────
+    // Card na Home — injeção Frida na MediaCenter
+    // ─────────────────────────────
+
+    /** (Des)ativa o card de clima na tela principal da MediaCenter.
+     *  Roda no backgroundHandler. */
+    private void applyHomeCard(boolean enabled) {
+        homeCardEnabled = enabled;
+        backgroundHandler.removeCallbacks(homeCardWatchdogRunnable);
+        if (enabled) {
+            String msg = FridaUtils.startHomeCard();
+            injectedMediaCenterPid = FridaUtils.mediaCenterPid();
+            Log.w(TAG, "[homecard] ativado: " + msg + " (mediacenter pid=" + injectedMediaCenterPid + ")");
+            backgroundHandler.postDelayed(homeCardWatchdogRunnable, HOME_CARD_WATCHDOG_MS);
+        } else {
+            // Grava "off" e só encerra o injetor depois que o script teve tempo de
+            // restaurar a fileira — matá-lo antes congelaria a tela sem os ícones.
+            String msg = FridaUtils.stopHomeCard();
+            injectedMediaCenterPid = "";
+            backgroundHandler.postDelayed(() -> {
+                if (!homeCardEnabled) FridaUtils.stopHomeCardInjection();
+            }, HOME_CARD_RESTORE_MS);
+            Log.w(TAG, "[homecard] desativado: " + msg);
+        }
+    }
+
+    /** Watchdog: a cada 10s re-injeta se o injetor caiu ou a MediaCenter reiniciou. */
+    private void homeCardWatchdogTick() {
+        if (!homeCardEnabled) return;
+        try {
+            String currentPid = FridaUtils.mediaCenterPid();
+            boolean restarted = !currentPid.isEmpty() && !currentPid.equals(injectedMediaCenterPid);
+            if (restarted || !FridaUtils.isHomeCardInjectionAlive()) {
+                Log.w(TAG, "[homecard] watchdog re-injetando (restart=" + restarted + ")");
+                FridaUtils.startHomeCard();
+                injectedMediaCenterPid = FridaUtils.mediaCenterPid();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "[homecard] watchdog erro: " + e.getMessage(), e);
+        } finally {
+            if (homeCardEnabled) {
+                backgroundHandler.postDelayed(homeCardWatchdogRunnable, HOME_CARD_WATCHDOG_MS);
             }
         }
     }

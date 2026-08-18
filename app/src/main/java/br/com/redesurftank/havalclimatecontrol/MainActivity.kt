@@ -68,6 +68,7 @@ private const val KEY_LAST_UPDATE_CHECK    = "last_update_check_ms"
 private const val KEY_SEAT_VENT_AUTO       = "seat_vent_auto_enabled"
 private const val KEY_COMFORT_MODE         = "comfort_mode"
 private const val KEY_REAL_OUTSIDE_TEMP    = "real_outside_temp_enabled"
+private const val KEY_HOME_CARD            = "home_card_enabled"
 private const val UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
 // ─────────────────────────────────────────────────────────────
@@ -1733,7 +1734,11 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     var realOutsideTempEnabled by remember {
         mutableStateOf(prefs.getBoolean(KEY_REAL_OUTSIDE_TEMP, false))
     }
-    var showHelp by remember { mutableStateOf(false) }
+    var homeCardEnabled by remember {
+        mutableStateOf(prefs.getBoolean(KEY_HOME_CARD, false))
+    }
+    var showHelp     by remember { mutableStateOf(false) }
+    var showCardHelp by remember { mutableStateOf(false) }
     val fridaAvailable = remember { FridaUtils.fridaToolsEmbedded() }
 
     Column(modifier = Modifier.fillMaxSize().background(HmiBg).padding(20.dp)) {
@@ -1808,6 +1813,66 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 }
             }
         }
+
+        Spacer(Modifier.height(14.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+            shape    = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment     = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier              = Modifier.weight(1f),
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            "Mostrar Card na Home",
+                            fontSize   = 17.sp,
+                            fontWeight = FontWeight.Medium,
+                            color      = HmiFg
+                        )
+                        IconButton(onClick = { showCardHelp = true }, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = "Ajuda",
+                                tint     = HmiFgMuted,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Switch(
+                        checked         = homeCardEnabled,
+                        onCheckedChange = { enabled ->
+                            homeCardEnabled       = enabled
+                            state.homeCardEnabled = enabled
+                            prefs.edit().putBoolean(KEY_HOME_CARD, enabled).apply()
+                            state.onHomeCardToggle?.onToggle(enabled)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor   = Color.White,
+                            checkedTrackColor   = HmiAccent,
+                            uncheckedThumbColor = HmiFgMuted,
+                            uncheckedTrackColor = HmiSurface
+                        )
+                    )
+                }
+                if (!fridaAvailable) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "⚠ Recursos do Frida ausentes neste APK (build debug). Esta opção só funciona no APK do Release/CI.",
+                        fontSize = 13.sp,
+                        color    = Color(0xFFFFB74D)
+                    )
+                }
+            }
+        }
     }
 
     if (showHelp) {
@@ -1816,6 +1881,18 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
             title             = { Text("Temperatura Externa Real (UI)") },
             text              = { Text("Ativando essa opção irá desabilitar o serviço nativo da central de previsão do tempo e será mostrado a temperatura externa real.") },
             confirmButton     = { TextButton(onClick = { showHelp = false }) { Text("OK") } },
+            containerColor    = Color(0xFF1E1E1E),
+            titleContentColor = HmiFg,
+            textContentColor  = HmiFgMuted
+        )
+    }
+
+    if (showCardHelp) {
+        AlertDialog(
+            onDismissRequest  = { showCardHelp = false },
+            title             = { Text("Mostrar Card na Home") },
+            text              = { Text("Substitui a fileira de mídia online da tela principal da central por um card com o estado do ar-condicionado: A/C ligado, temperatura interna e velocidade do vento. Tocar no card abre este app. Ao desativar, a fileira original volta.") },
+            confirmButton     = { TextButton(onClick = { showCardHelp = false }) { Text("OK") } },
             containerColor    = Color(0xFF1E1E1E),
             titleContentColor = HmiFg,
             textContentColor  = HmiFgMuted

@@ -41,13 +41,17 @@ object ClimateStateHolder {
     // Configurações — Temperatura Externa Real (UI). Espelho lido pelo serviço.
     var realOutsideTempEnabled by mutableStateOf(false)
 
-    /** Callback UI → serviço: acionado quando a opção "Temperatura Externa Real" é alternada.
+    // Configurações — Card na Home da MediaCenter. Espelho lido pelo serviço.
+    var homeCardEnabled by mutableStateOf(false)
+
+    /** Callback UI → serviço para as opções que dependem de injeção Frida.
      *  fun interface para permitir lambda de Java (o serviço). */
-    fun interface RealTempToggleCallback {
+    fun interface ToggleCallback {
         fun onToggle(enabled: Boolean)
     }
 
-    @Volatile var onRealOutsideTempToggle: RealTempToggleCallback? = null
+    @Volatile var onRealOutsideTempToggle: ToggleCallback? = null
+    @Volatile var onHomeCardToggle: ToggleCallback? = null
 
     // Callbacks invocados pelo serviço (via mainHandler) quando uma mudança externa é detectada
     @Volatile var onExternalVentChange:    ((String) -> Unit)? = null

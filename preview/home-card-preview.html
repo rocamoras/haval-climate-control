@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Card na Home — preview</title>
+<style>
+  :root{
+    --bg:#000; --surface:#141414; --surface2:#1C1C1C;
+    --fg:#FAFAFA; --muted:#A3A3A3; --dim:#6B6B6B; --faint:#404040;
+    --accent:#22C55E; --accent-soft:rgba(34,197,94,.12); --accent-edge:rgba(34,197,94,.40);
+    --border:rgba(255,255,255,.07); --border-str:rgba(255,255,255,.12);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#070707;color:var(--fg);
+       font-family:"Segoe UI",Roboto,system-ui,sans-serif;padding:32px 40px 80px}
+  h1{font-size:20px;font-weight:700;letter-spacing:-.2px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:14px;margin:0 0 28px}
+  h2{font-size:13px;font-weight:600;letter-spacing:2px;color:var(--dim);
+     margin:36px 0 14px;text-transform:uppercase}
+  .note{color:var(--muted);font-size:13px;line-height:1.6;max-width:900px;margin:8px 0 0}
+  .row{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
+  .case{display:flex;flex-direction:column;gap:8px}
+  .caseLabel{font-size:12px;color:var(--dim);font-family:ui-monospace,Consolas,monospace}
+
+  /* ─── o card: 536 x 324 px (1dp = 1px nesta tela) ─── */
+  .card{
+    width:536px;height:324px;background:var(--surface);
+    border:1px solid var(--border);border-radius:24px;
+    padding:30px 32px;display:flex;flex-direction:column;justify-content:space-between;
+  }
+  .hdr{display:flex;align-items:center;justify-content:space-between}
+  .hdrLabel{font-size:17px;font-weight:600;letter-spacing:3px;color:var(--dim)}
+  .badge{display:flex;align-items:center;gap:8px}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--faint)}
+  .dot.on{background:var(--accent)}
+  .badgeTxt{font-size:16px;font-weight:600;letter-spacing:1px;color:var(--faint);
+            font-family:ui-monospace,Consolas,monospace}
+  .badgeTxt.on{color:var(--accent)}
+
+  .mid{display:flex;align-items:center;gap:24px}
+  .tile{width:88px;height:88px;border-radius:22px;background:var(--surface2);
+        border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
+        flex:0 0 auto}
+  .tile.on{background:var(--accent-soft);border-color:var(--accent-edge)}
+  .temp{display:flex;flex-direction:column;gap:2px}
+  .tempVal{font-size:76px;font-weight:500;line-height:.92;letter-spacing:-2px;color:var(--fg)}
+  .tempVal.off{color:var(--faint)}
+  .tempUnit{font-size:34px;font-weight:400;color:var(--muted);letter-spacing:0}
+  .tempLbl{font-size:15px;letter-spacing:3px;color:var(--dim);font-weight:600}
+
+  .btm{display:flex;align-items:center;gap:18px}
+  .bars{display:flex;gap:5px;flex:1}
+  .bar{flex:1;height:12px;border-radius:3px;background:var(--surface2);
+       border:1px solid var(--border)}
+  .bar.fill{background:var(--fg);border-color:var(--muted)}
+  .fanVal{font-size:24px;font-weight:600;font-family:ui-monospace,Consolas,monospace;
+          color:var(--fg);min-width:30px;text-align:right}
+  .fanVal.off{color:var(--faint)}
+
+  /* ─── contexto: fileira de mídia online, 1672 x 384 ─── */
+  .ctxWrap{overflow-x:auto;padding-bottom:12px}
+  .ctx{width:1672px;height:384px;background:#0b0b0b;border:1px dashed rgba(255,255,255,.09);
+       border-radius:12px;display:flex;align-items:center;padding:0 18px;gap:18px}
+  .ctxTitle{position:relative;font-size:22px;color:var(--muted);margin:0 0 10px;
+            letter-spacing:.5px}
+  .ghost{width:536px;height:324px;border:1px dashed rgba(255,255,255,.07);border-radius:24px;
+         display:flex;align-items:center;justify-content:center;color:#2a2a2a;font-size:15px}
+</style>
+</head>
+<body>
+
+<h1>Card na Home — preview de aprovação</h1>
+<p class="sub">Haval H6 GT · 536 × 324 px (densidade 1.0 → dp = px) · desenhado em runtime no
+<code>online_music_container</code> da MediaCenter</p>
+
+<h2>Estados</h2>
+<div class="row" id="cases"></div>
+
+<h2>Em contexto — fileira da MediaCenter (1672 × 384)</h2>
+<div class="ctxWrap">
+  <p class="ctxTitle">Clima</p>
+  <div class="ctx">
+    <div id="ctxCard"></div>
+    <div class="ghost">espaço livre (fileira esvaziada)</div>
+    <div class="ghost">&nbsp;</div>
+  </div>
+</div>
+
+<p class="note">
+<strong>Leitura:</strong> topo = rótulo + selo AUTO/MANUAL (<code>car.hvac.auto_enable</code>);
+tile do floco = A/C ligado (<code>car.hvac.ac_enable</code>, verde quando on);
+número grande = temperatura interna (<code>car.basic.inside_temp</code>);
+rodapé = velocidade do vento (<code>car.hvac.fan_speed</code>, 7 segmentos).
+Sem texto além do valor da temperatura e do número do ventilador — o resto é ícone/segmento.
+Atualiza a cada ~1,5 s. Com o HVAC desligado (<code>power_mode</code> = 0) o card fica apagado.
+</p>
+
+<script>
+const ICON_SNOW = `<svg width="42" height="42" viewBox="0 0 24 24" fill="none"
+  stroke="CLR" stroke-width="1.7" stroke-linecap="round">
+  <line x1="12" y1="2.5" x2="12" y2="21.5"/>
+  <line x1="3.8" y1="7.2" x2="20.2" y2="16.8"/>
+  <line x1="3.8" y1="16.8" x2="20.2" y2="7.2"/>
+  <path d="M9.6 4.6 12 6.9l2.4-2.3M9.6 19.4 12 17.1l2.4 2.3"/>
+  <path d="M4.7 10.9 4 7.8l3.1-.6M19.3 13.1l.7 3.1-3.1.6"/>
+  <path d="M7.1 17.4l-3.1-.6.7-3.1M16.9 6.6l3.1.6-.7 3.1"/>
+</svg>`;
+
+const ICON_WIND = `<svg width="34" height="34" viewBox="0 0 24 24" fill="none"
+  stroke="CLR" stroke-width="1.9" stroke-linecap="round">
+  <path d="M3 8h10.5a2.7 2.7 0 1 0-2.7-2.7"/>
+  <path d="M3 12.5h13.8a2.7 2.7 0 1 1-2.7 2.7"/>
+  <path d="M3 17h7.5"/>
+</svg>`;
+
+function icon(tpl, color){ return tpl.replaceAll('CLR', color); }
+
+function card({ ac, auto, temp, fan, on = true }) {
+  const acOn   = on && ac;
+  const autoOn = on && auto;
+  const bars = Array.from({length:7}, (_,i) =>
+    `<div class="bar ${on && i < fan ? 'fill' : ''}"></div>`).join('');
+  return `
+  <div class="card">
+    <div class="hdr">
+      <div class="hdrLabel">CLIMA</div>
+      <div class="badge">
+        <div class="dot ${autoOn?'on':''}"></div>
+        <div class="badgeTxt ${autoOn?'on':''}">${on ? (auto?'AUTO':'MANUAL') : 'OFF'}</div>
+      </div>
+    </div>
+    <div class="mid">
+      <div class="tile ${acOn?'on':''}">
+        ${icon(ICON_SNOW, acOn ? '#22C55E' : (on ? '#A3A3A3' : '#404040'))}
+      </div>
+      <div class="temp">
+        <div class="tempVal ${on?'':'off'}">${on ? temp : '--'}${on ? '<span class="tempUnit">°C</span>' : ''}</div>
+        <div class="tempLbl">INTERNA</div>
+      </div>
+    </div>
+    <div class="btm">
+      ${icon(ICON_WIND, on ? '#A3A3A3' : '#404040')}
+      <div class="bars">${bars}</div>
+      <div class="fanVal ${on?'':'off'}">${on ? fan : '--'}</div>
+    </div>
+  </div>`;
+}
+
+const CASES = [
+  ['A/C ligado · AUTO · vento 4',      { ac:true,  auto:true,  temp:23, fan:4 }],
+  ['A/C ligado · MANUAL · vento 7',    { ac:true,  auto:false, temp:19, fan:7 }],
+  ['A/C desligado · AUTO · vento 2',   { ac:false, auto:true,  temp:28, fan:2 }],
+  ['HVAC desligado (carro off)',       { ac:false, auto:false, temp:0,  fan:0, on:false }],
+];
+
+document.getElementById('cases').innerHTML = CASES.map(([l,c]) =>
+  `<div class="case"><div class="caseLabel">${l}</div>${card(c)}</div>`).join('');
+document.getElementById('ctxCard').innerHTML = card({ ac:true, auto:true, temp:23, fan:4 });
+</script>
+</body>
+</html>
