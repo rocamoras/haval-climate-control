@@ -1930,6 +1930,10 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 }
             }
         }
+
+        Spacer(Modifier.height(14.dp))
+
+        UpdateCard()
     }
 
     if (showHelp) {
@@ -1950,6 +1954,200 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
             title             = { Text("Mostrar Card na Home") },
             text              = { Text("Substitui a fileira de mídia online da tela principal da central por um card com o estado do ar-condicionado: A/C ligado, temperatura interna e velocidade do vento. Tocar no card abre este app. Ao desativar, a fileira original volta.") },
             confirmButton     = { TextButton(onClick = { showCardHelp = false }) { Text("OK") } },
+            containerColor    = Color(0xFF1E1E1E),
+            titleContentColor = HmiFg,
+            textContentColor  = HmiFgMuted
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Atualização do app (Configurações)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Verifica o último release no GitHub e, se houver versão nova, baixa e dispara a
+ * instalação. A tag do release precisa bater com o versionName (ex. v1.13.0).
+ */
+@Composable
+private fun UpdateCard() {
+    val context = LocalContext.current
+    val scope   = rememberCoroutineScope()
+
+    var currentVersion   by remember { mutableStateOf("--") }
+    var isChecking       by remember { mutableStateOf(false) }
+    var isDownloading    by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableFloatStateOf(0f) }
+    var updateAvailable  by remember { mutableStateOf(false) }
+    var latestVersion    by remember { mutableStateOf("") }
+    var downloadUrl      by remember { mutableStateOf("") }
+    var statusText       by remember { mutableStateOf("") }
+    var showPermDialog   by remember { mutableStateOf(false) }
+
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { }
+
+    LaunchedEffect(Unit) {
+        try {
+            currentVersion = context.packageManager
+                .getPackageInfo(context.packageName, 0).versionName ?: "--"
+        } catch (_: PackageManager.NameNotFoundException) {}
+    }
+
+    fun installApk(file: File) {
+        if (!context.packageManager.canRequestPackageInstalls()) {
+            showPermDialog = true; return
+        }
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
+        context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
+    }
+
+    fun startDownload() {
+        isDownloading = true; downloadProgress = 0f; statusText = ""
+        scope.launch(Dispatchers.IO) {
+            try {
+                val file  = File(context.getExternalFilesDir(null), "update.apk")
+                val conn  = URL(downloadUrl).openConnection() as HttpURLConnection
+                val total = conn.contentLength
+                val buf   = ByteArray(4096)
+                var bytes = 0; var read: Int
+                FileOutputStream(file).use { out ->
+                    BufferedInputStream(conn.inputStream).use { inp ->
+                        while (inp.read(buf).also { read = it } != -1) {
+                            out.write(buf, 0, read); bytes += read
+                            if (total > 0) downloadProgress = bytes.toFloat() / total
+                        }
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    isDownloading = false; updateAvailable = false; installApk(file)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Download failed", e)
+                withContext(Dispatchers.Main) {
+                    isDownloading = false
+                    statusText    = "Erro no download: ${e.message}"
+                }
+            }
+        }
+    }
+
+    fun checkForUpdates() {
+        isChecking = true; statusText = ""
+        scope.launch(Dispatchers.IO) {
+            try {
+                val conn = URL(GITHUB_RELEASES_API).openConnection() as HttpURLConnection
+                conn.requestMethod = "GET"
+                conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
+                if (conn.responseCode != 200) throw Exception("HTTP ${conn.responseCode}")
+                val json   = JSONObject(conn.inputStream.bufferedReader().readText())
+                val tag    = json.getString("tag_name")
+                val assets = json.getJSONArray("assets")
+                var dlUrl: String? = null
+                for (i in 0 until assets.length()) {
+                    val a = assets.getJSONObject(i)
+                    if (a.getString("name").endsWith(".apk")) {
+                        dlUrl = a.getString("browser_download_url"); break
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    isChecking = false
+                    if (dlUrl != null && compareVersions(tag, currentVersion) > 0) {
+                        latestVersion = tag; downloadUrl = dlUrl; updateAvailable = true
+                        statusText    = ""
+                    } else {
+                        updateAvailable = false
+                        statusText      = "Você já está na versão mais recente."
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Update check failed", e)
+                withContext(Dispatchers.Main) {
+                    isChecking = false
+                    statusText = "Erro ao verificar: ${e.message}"
+                }
+            }
+        }
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+        shape    = RoundedCornerShape(16.dp)
+    ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            Row(
+                modifier              = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment     = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Atualizar versão",
+                        fontSize   = 17.sp,
+                        fontWeight = FontWeight.Medium,
+                        color      = HmiFg
+                    )
+                    Text(
+                        if (updateAvailable) "Versão $latestVersion disponível — atual $currentVersion"
+                        else "Versão instalada: $currentVersion",
+                        fontSize = 15.sp,
+                        color    = if (updateAvailable) HmiAccent else Color(0xFF888888)
+                    )
+                }
+                Button(
+                    onClick = { if (updateAvailable) startDownload() else checkForUpdates() },
+                    enabled = !isChecking && !isDownloading,
+                    colors  = ButtonDefaults.buttonColors(
+                        containerColor = if (updateAvailable) HmiAccent else Color(0xFF1565C0)
+                    ),
+                    shape   = RoundedCornerShape(10.dp)
+                ) {
+                    Text(
+                        when {
+                            isChecking      -> "Verificando…"
+                            isDownloading   -> "Baixando ${(downloadProgress * 100).toInt()}%"
+                            updateAvailable -> "Baixar e instalar"
+                            else            -> "Verificar agora"
+                        },
+                        fontSize = 16.sp
+                    )
+                }
+            }
+            if (isDownloading) {
+                Spacer(Modifier.height(10.dp))
+                LinearProgressIndicator(
+                    progress = { downloadProgress },
+                    modifier = Modifier.fillMaxWidth(),
+                    color    = HmiAccent
+                )
+            }
+            if (statusText.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(statusText, fontSize = 14.sp, color = HmiFgMuted)
+            }
+        }
+    }
+
+    if (showPermDialog) {
+        AlertDialog(
+            onDismissRequest = { showPermDialog = false },
+            title            = { Text("Permissão necessária") },
+            text             = { Text("Autorize a instalação de apps de fontes desconhecidas para concluir a atualização.") },
+            confirmButton    = {
+                TextButton(onClick = {
+                    showPermDialog = false
+                    permLauncher.launch(
+                        Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                            .setData(android.net.Uri.parse("package:${context.packageName}"))
+                    )
+                }) { Text("Abrir ajustes") }
+            },
+            dismissButton     = { TextButton(onClick = { showPermDialog = false }) { Text("Cancelar") } },
             containerColor    = Color(0xFF1E1E1E),
             titleContentColor = HmiFg,
             textContentColor  = HmiFgMuted

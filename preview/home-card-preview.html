@@ -22,9 +22,9 @@
   .case{display:flex;flex-direction:column;gap:8px}
   .caseLabel{font-size:12px;color:var(--dim);font-family:ui-monospace,Consolas,monospace}
 
-  /* ─── o card: 536 x 324 px (1dp = 1px nesta tela) ─── */
+  /* ─── o card: 536 x 300 px (1dp = 1px nesta tela) ─── */
   .card{
-    width:536px;height:324px;background:var(--surface);
+    width:536px;height:300px;background:var(--surface);
     border:1px solid var(--border);border-radius:24px;
     padding:30px 32px;display:flex;flex-direction:column;justify-content:space-between;
   }
@@ -57,33 +57,34 @@
           color:var(--fg);min-width:30px;text-align:right}
   .fanVal.off{color:var(--faint)}
 
-  /* ─── contexto: fileira de mídia online, 1672 x 384 ─── */
+  /* ─── contexto: fileira de mídia online, 1158 x 330 (içada) ─── */
   .ctxWrap{overflow-x:auto;padding-bottom:12px}
-  .ctx{width:1672px;height:384px;background:#0b0b0b;border:1px dashed rgba(255,255,255,.09);
+  .ctx{width:1158px;height:330px;background:#0b0b0b;border:1px dashed rgba(255,255,255,.09);
        border-radius:12px;display:flex;align-items:center;padding:0 18px;gap:18px}
+  .ceil{width:1158px;border-top:1px dashed rgba(239,68,68,.55);color:#EF4444;font-size:12px;
+        padding-top:6px;font-family:ui-monospace,Consolas,monospace}
   .ctxTitle{position:relative;font-size:22px;color:var(--muted);margin:0 0 10px;
             letter-spacing:.5px}
-  .ghost{width:536px;height:324px;border:1px dashed rgba(255,255,255,.07);border-radius:24px;
+  .ghost{width:536px;height:300px;border:1px dashed rgba(255,255,255,.07);border-radius:24px;
          display:flex;align-items:center;justify-content:center;color:#2a2a2a;font-size:15px}
 </style>
 </head>
 <body>
 
 <h1>Card na Home — preview de aprovação</h1>
-<p class="sub">Haval H6 GT · 536 × 324 px (densidade 1.0 → dp = px) · desenhado em runtime no
+<p class="sub">Haval H6 GT · 536 × 300 px (densidade 1.0 → dp = px) · desenhado em runtime no
 <code>online_music_container</code> da MediaCenter</p>
 
 <h2>Estados</h2>
 <div class="row" id="cases"></div>
 
-<h2>Em contexto — fileira da MediaCenter (1672 × 384)</h2>
+<h2>Em contexto — fileira da MediaCenter (1158 × 330, config default)</h2>
 <div class="ctxWrap">
-  <p class="ctxTitle">Clima</p>
   <div class="ctx">
     <div id="ctxCard"></div>
     <div class="ghost">espaço livre (fileira esvaziada)</div>
-    <div class="ghost">&nbsp;</div>
   </div>
+  <div class="ceil">y = 430 — topo do título "Mídia local" (teto rígido)</div>
 </div>
 
 <p class="note">
@@ -93,6 +94,15 @@ número grande = temperatura interna (<code>car.basic.inside_temp</code>);
 rodapé = velocidade do vento (<code>car.hvac.fan_speed</code>, 7 segmentos).
 Sem texto além do valor da temperatura e do número do ventilador — o resto é ícone/segmento.
 Atualiza a cada ~1,5 s. Com o HVAC desligado (<code>power_mode</code> = 0) o card fica apagado.
+</p>
+
+<p class="note">
+<strong>Geometria (corrigida).</strong> Esta central é 1792×720 e usa o layout <em>default</em> do
+APK, não o <code>layout-1792x1080</code>: a fileira fica em <code>marginTop 168</code> com
+<code>width 1158</code>, e o título "Mídia local" em <code>430</code> — só 262 px de altura útil.
+Como tudo é ancorado no topo do pai com margem fixa, esconder o título "Mídia online" não sobe a
+fileira sozinho; o script reescreve o <code>topMargin</code> dela de <code>168</code> para
+<code>100</code>, liberando 330 px. Daí o card de <strong>300</strong>, com 30 px de folga.
 </p>
 
 <script>

@@ -22,9 +22,20 @@
  *   car.hvac.ac_enable, car.hvac.auto_enable, car.hvac.fan_speed,
  *   car.hvac.power_mode; e car.basic.inside_temp (confirmada em campo).
  *
+ * Geometria (config DEFAULT do APK — esta central é 1792x720, ela NÃO usa o
+ * layout-1792x1080 que o handoff mediu; daí os números divergirem dele):
+ *   título online_music   marginTop 100  (32sp, ~37px de altura)
+ *   HorizontalScrollView  marginTop 168, width 1158
+ *   título local_media    marginTop 430  <- teto rígido: passar disso sobrepõe
+ *   cards de conteúdo     marginTop 498
+ * Com o título visível sobram só 262px. Como tudo é ancorado no topo do pai com
+ * margem fixa e sem encadeamento (handoff §2), esconder o título NÃO sobe a
+ * fileira sozinho — por isso reescrevemos o topMargin dela para 100, o que dá
+ * 330px de altura útil para um card de 300.
+ *
  * Controle em runtime por /data/local/tmp/haval_home_card:
- *   "on"  -> fileira esvaziada, card desenhado, título vira "Clima"
- *   "off" (ou arquivo ausente) -> restaura a fileira e o título originais
+ *   "on"  -> fileira esvaziada e içada, título escondido, card desenhado
+ *   "off" (ou arquivo ausente) -> restaura fileira, margem e título originais
  */
 "use strict";
 
@@ -38,7 +49,7 @@ Java.perform(function () {
     var OUR_PKG  = "br.com.redesurftank.havalclimatecontrol";
     var CARD_TAG = "hcc-home-card";
     var CP_CARD  = 590;          // CP virtual: precisa cair em 501..600 p/ o onClick do OEM
-    var TITLE    = "Clima";
+    var ROW_TOP  = 100;          // topMargin da fileira com o titulo escondido
 
     // ── wrappers ───────────────────────────────────────────────────────────
     // Regra do handoff §3: instância de Java.choose expõe só os métodos da
@@ -54,6 +65,7 @@ Java.perform(function () {
     var ViewCls      = Java.use("android.view.View");
     var ViewGroupCls = Java.use("android.view.ViewGroup");
     var VGLayoutParams = Java.use("android.view.ViewGroup$LayoutParams");
+    var MarginLP       = Java.use("android.view.ViewGroup$MarginLayoutParams");
     var TextViewCls  = Java.use("android.widget.TextView");
     var ImageView    = Java.use("android.widget.ImageView");
     var LLParams     = Java.use("android.widget.LinearLayout$LayoutParams");
@@ -97,7 +109,9 @@ Java.perform(function () {
     var C_BORDER      = 0x1AFFFFFF | 0;
 
     // ── geometria (densidade 1.0 nesta tela: 1dp = 1px) ─────────────────────
-    var W = 536, H = 324, PAD = 32;
+    // 330px úteis com a fileira içada; 300 deixa 30 de folga antes de "Mídia local".
+    // Largura: a fileira tem 1158 nesta config, então 536 cabe com sobra.
+    var W = 536, H = 300, PAD = 32;
 
     // ── leitura do veículo ──────────────────────────────────────────────────
     var K_INSIDE = "car.basic.inside_temp";
@@ -246,18 +260,18 @@ Java.perform(function () {
         var autoOn = s.on && s.auto;
 
         // ── cabeçalho: rótulo + selo de modo ──
-        text(cv, "CLIMA", PAD, 56,
+        text(cv, "CLIMA", PAD, 52,
             textPaint(C_DIM, 17, "sans-serif-medium", 0.18));
 
         var badge   = s.on ? (s.auto ? "AUTO" : "MANUAL") : "OFF";
         var badgeP  = textPaint(autoOn ? C_ACCENT : C_FAINT, 16, "monospace", 0.06);
         var badgeW  = badgeP.measureText.overload("java.lang.String").call(badgeP, badge);
-        text(cv, badge, W - PAD - badgeW, 56, badgeP);
-        circle(cv, W - PAD - badgeW - 16, 50, 5,
+        text(cv, badge, W - PAD - badgeW, 52, badgeP);
+        circle(cv, W - PAD - badgeW - 16, 46, 5,
             newPaint(autoOn ? C_ACCENT : C_FAINT, false, 0));
 
         // ── meio: tile do A/C + temperatura interna ──
-        var tileX = PAD, tileY = 110, tileS = 88;
+        var tileX = PAD, tileY = 98, tileS = 88;
         roundRect(cv, tileX, tileY, tileX + tileS, tileY + tileS, 22,
             newPaint(acOn ? C_ACCENT_SOFT : C_SURFACE2, false, 0));
         roundRect(cv, tileX + 0.5, tileY + 0.5, tileX + tileS - 0.5, tileY + tileS - 0.5, 22,
@@ -268,17 +282,17 @@ Java.perform(function () {
         var tx = tileX + tileS + 24;
         var tempStr = (s.on && s.temp !== null) ? ("" + Math.round(s.temp)) : "--";
         var tempP   = textPaint(s.on ? C_FG : C_FAINT, 76, "sans-serif-medium", 0);
-        text(cv, tempStr, tx, 182, tempP);
+        text(cv, tempStr, tx, 170, tempP);
         if (s.on && s.temp !== null) {
             var tw = tempP.measureText.overload("java.lang.String").call(tempP, tempStr);
-            text(cv, "°C", tx + tw + 6, 182,
+            text(cv, "°C", tx + tw + 6, 170,
                 textPaint(C_MUTED, 34, "sans-serif", 0));
         }
-        text(cv, "INTERNA", tx + 2, 212,
+        text(cv, "INTERNA", tx + 2, 198,
             textPaint(C_DIM, 15, "sans-serif-medium", 0.2));
 
         // ── rodapé: vento (ícone + 7 segmentos + valor) ──
-        var cy = 280;                              // barras terminam em 286, PAD embaixo
+        var cy = 262;                              // barras terminam em 268, PAD embaixo
         drawWind(cv, PAD, cy, s.on ? C_MUTED : C_FAINT);
 
         var fanStr = s.on ? ("" + s.fan) : "--";
@@ -334,8 +348,8 @@ Java.perform(function () {
     var enabled  = false;
     var lastCtrl = null;        // marcador "ainda não li"
     var lastSig  = null;        // snapshot já pintado
-    var origList = null;        // CPs de fábrica, para restaurar no "off"
-    var origTitle = null;       // texto original do id/online_music
+    var origList  = null;       // CPs de fábrica, para restaurar no "off"
+    var origRowTop = null;      // topMargin original da fileira, para restaurar no "off"
 
     function readCtrl() {
         try {
@@ -505,27 +519,51 @@ Java.perform(function () {
                 log("card pintado: " + sig);
             }
 
-            setTitle(act, TITLE);
+            setTitleVisible(act, false);
+            setRowTop(act, ROW_TOP);
         } catch (e) {
             logOnce("paint:" + e, "paintCard err: " + e + (e.stack ? " | " + e.stack : ""));
         }
     }
 
-    /** Troca o texto do título do bloco, guardando o original na primeira vez. */
-    function setTitle(act, txt) {
+    /** Mostra/esconde o título "Mídia online" do bloco. */
+    function setTitleVisible(act, visible) {
         try {
             var raw = viewOf(act, "online_music");
             if (raw === null) return;
-            var tv = Java.cast(raw, TextViewCls);
-            if (origTitle === null) {
-                var cur = tv.getText();
-                origTitle = (cur === null) ? "" : ("" + cur);
-            }
-            if (("" + tv.getText()) !== txt) {
-                tv.setText.overload("java.lang.CharSequence").call(tv, Str.$new(txt));
-            }
+            var v = Java.cast(raw, ViewCls);
+            var want = visible ? 0 : 8;            // VISIBLE : GONE
+            if (v.getVisibility() !== want) v.setVisibility(want);
         } catch (e) {
-            logOnce("title:" + e, "setTitle err: " + e);
+            logOnce("title:" + e, "setTitleVisible err: " + e);
+        }
+    }
+
+    /**
+     * Reescreve o topMargin da fileira. Esconder o título não sobe nada sozinho:
+     * a fileira é ancorada no topo do PAI com margem fixa, sem encadeamento com
+     * o título (handoff §2). Sem isto o card de 300 bateria em "Mídia local"
+     * (168 + 300 = 468 > 430).
+     */
+    function setRowTop(act, top) {
+        try {
+            var raw = viewOf(act, "horizontalScrollView");
+            if (raw === null) return;
+            var v   = Java.cast(raw, ViewCls);
+            var lp  = v.getLayoutParams();
+            if (lp === null) return;
+            var mlp = Java.cast(lp, MarginLP);
+            if (origRowTop === null) {
+                origRowTop = mlp.topMargin.value;
+                log("topMargin original da fileira = " + origRowTop);
+            }
+            var prev = mlp.topMargin.value;
+            if (prev === top) return;
+            mlp.topMargin.value = top;
+            v.setLayoutParams(Java.cast(mlp, VGLayoutParams));
+            log("topMargin da fileira: " + prev + " -> " + top);
+        } catch (e) {
+            logOnce("rowtop:" + e, "setRowTop err: " + e);
         }
     }
 
@@ -543,7 +581,8 @@ Java.perform(function () {
                         .call(Java.cast(boxRaw, ViewGroupCls), Java.cast(found, ViewCls));
                 }
             }
-            if (origTitle !== null) setTitle(act, origTitle);
+            if (origRowTop !== null) setRowTop(act, origRowTop);
+            setTitleVisible(act, true);
             act.loadOnlineMusicCard();       // redesenha os ícones de fábrica
             log("fileira original restaurada");
         } catch (e) {
@@ -605,7 +644,9 @@ Java.perform(function () {
          ["readState",  function () { return readState() !== null; }],
          ["stateSig",   function () { return stateSig(readState()).length > 0; }],
          ["drawCard",   function () { return drawCard(readState()) !== null; }],
-         ["readCtrl",   function () { return typeof readCtrl() === "boolean"; }]
+         ["readCtrl",   function () { return typeof readCtrl() === "boolean"; }],
+         // teto rígido: 430 (topo do título "Mídia local") - ROW_TOP
+         ["altura",     function () { return ROW_TOP + H <= 430; }]
         ].forEach(function (par) {
             try {
                 if (par[1]() !== true) falhas.push(par[0] + " (resultado inesperado)");
