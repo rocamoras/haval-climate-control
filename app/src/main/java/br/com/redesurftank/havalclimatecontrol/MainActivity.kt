@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import br.com.redesurftank.havalclimatecontrol.ui.theme.HavalClimateControlTheme
 import br.com.redesurftank.havalclimatecontrol.utils.FridaUtils
+import br.com.redesurftank.havalclimatecontrol.utils.LogUploader
 import br.com.redesurftank.havalclimatecontrol.utils.SystemPropsUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1389,6 +1390,12 @@ fun DebugScreen(onNavigateBack: () -> Unit) {
     var showPermDialog   by remember { mutableStateOf(false) }
     var downloadJob      by remember { mutableStateOf<Job?>(null) }
 
+    // Upload do log para o Firebase Storage
+    var isUploading   by remember { mutableStateOf(false) }
+    var uploadStatus  by remember { mutableStateOf("") }
+    var uploadUrl     by remember { mutableStateOf("") }
+    var showUploadDlg by remember { mutableStateOf(false) }
+
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { }
@@ -1398,6 +1405,31 @@ fun DebugScreen(onNavigateBack: () -> Unit) {
             currentVersion = context.packageManager
                 .getPackageInfo(context.packageName, 0).versionName ?: "--"
         } catch (_: PackageManager.NameNotFoundException) {}
+    }
+
+    fun uploadLog() {
+        isUploading   = true
+        uploadUrl     = ""
+        uploadStatus  = "Iniciando…"
+        showUploadDlg = true
+        scope.launch(Dispatchers.IO) {
+            val result = LogUploader.collectAndUpload(context) { msg ->
+                scope.launch(Dispatchers.Main) { uploadStatus = msg }
+            }
+            withContext(Dispatchers.Main) {
+                isUploading = false
+                when (result) {
+                    is LogUploader.Result.Ok -> {
+                        uploadUrl    = result.url
+                        uploadStatus = "Enviado (${result.sizeBytes / 1024} KB)"
+                        state.addLog("[${pm25TimeFmt.format(java.util.Date())}] log enviado ao Firebase")
+                    }
+                    is LogUploader.Result.Err -> {
+                        uploadStatus = "Erro: ${result.message}"
+                    }
+                }
+            }
+        }
     }
 
     fun installApk(file: File) {
@@ -1530,6 +1562,23 @@ fun DebugScreen(onNavigateBack: () -> Unit) {
                         Text("Atualizar", fontSize = 15.sp)
                     }
                 }
+                Button(
+                    onClick        = { uploadLog() },
+                    enabled        = !isUploading,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    colors         = ButtonDefaults.buttonColors(containerColor = Color(0xFF6A1B9A)),
+                    shape          = RoundedCornerShape(8.dp)
+                ) {
+                    if (isUploading) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = HmiFg, strokeWidth = 2.dp)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Enviando…", fontSize = 15.sp)
+                    } else {
+                        Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Enviar log", fontSize = 15.sp)
+                    }
+                }
                 StatusDot(connected = state.vehicleConnected)
             }
         }
@@ -1627,6 +1676,50 @@ fun DebugScreen(onNavigateBack: () -> Unit) {
             Pm25Panel(modifier = Modifier.weight(1.15f).fillMaxHeight())
             VendorPropsPanel(modifier = Modifier.weight(1f).fillMaxHeight())
         }
+    }
+
+    if (showUploadDlg) {
+        AlertDialog(
+            onDismissRequest = { if (!isUploading) showUploadDlg = false },
+            title            = { Text("Enviar log ao Firebase") },
+            text             = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(uploadStatus, fontSize = 16.sp, color = HmiFgMuted)
+                    if (isUploading) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = HmiAccent)
+                    }
+                    if (uploadUrl.isNotEmpty()) {
+                        Text(
+                            uploadUrl,
+                            fontSize   = 13.sp,
+                            color      = Color(0xFF4FC3F7),
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (uploadUrl.isNotEmpty()) {
+                    TextButton(onClick = {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("log", uploadUrl))
+                        showUploadDlg = false
+                    }) { Text("Copiar link") }
+                } else {
+                    TextButton(
+                        onClick = { showUploadDlg = false },
+                        enabled = !isUploading
+                    ) { Text("OK") }
+                }
+            },
+            dismissButton = if (uploadUrl.isNotEmpty()) {
+                { TextButton(onClick = { showUploadDlg = false }) { Text("Fechar") } }
+            } else null,
+            containerColor    = Color(0xFF1E1E1E),
+            titleContentColor = HmiFg,
+            textContentColor  = HmiFgMuted
+        )
     }
 
     if (showMsgDialog) {
