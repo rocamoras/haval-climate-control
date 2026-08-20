@@ -33,6 +33,12 @@
  * fileira sozinho — por isso reescrevemos o topMargin dela para 100, o que dá
  * 330px de altura útil para um card de 300.
  *
+ * A fileira do OEM é desenhada por loadOnlineMusicCard() no onCreate. Não existe
+ * preferencia persistida atrás dela: sem o hook instalado, os ícones aparecem. Por
+ * isso hookamos também loadOnlineMusicCard e pintamos o card DENTRO da mesma
+ * chamada — assim o card entra no mesmo frame do onCreate, sem passar pelo
+ * intervalo de 1,5s do poll.
+ *
  * Controle em runtime por /data/local/tmp/haval_home_card:
  *   "on"  -> fileira esvaziada e içada, título escondido, card desenhado
  *   "off" (ou arquivo ausente) -> restaura fileira, margem e título originais
@@ -477,6 +483,30 @@ Java.perform(function () {
         log("hook FALHOU skipApp4OnlineOs: " + e);
     }
 
+    /**
+     * Hook no proprio loadOnlineMusicCard: ele roda no onCreate e monta a fileira
+     * do OEM. Trocando o conteudo AQUI, dentro da mesma chamada na main thread, o
+     * card entra no mesmo frame -- sem a janela de ate 1,5s em que o container
+     * ficava vazio (ou com os icones do OEM) esperando o proximo tick.
+     *
+     * `this` de hook e referencia JNI LOCAL (handoff 7.4): usar no mesmo tick e
+     * correto, guardar entre ticks aborta o processo. Aqui nao guardamos nada.
+     */
+    try {
+        Java.use(ACT).loadOnlineMusicCard.implementation = function () {
+            this.loadOnlineMusicCard();
+            if (!enabled) return;
+            try {
+                paintCard(this, readState());
+            } catch (e) {
+                logOnce("onload:" + e, "paint no loadOnlineMusicCard err: " + e);
+            }
+        };
+        log("hook OK loadOnlineMusicCard (card no mesmo frame do onCreate)");
+    } catch (e) {
+        log("hook FALHOU loadOnlineMusicCard: " + e);
+    }
+
     // ── montagem da view ────────────────────────────────────────────────────
     /**
      * Cria (ou reaproveita) o ImageView do card no online_music_container e
@@ -610,7 +640,7 @@ Java.perform(function () {
     }
 
     // ── loop ────────────────────────────────────────────────────────────────
-    setInterval(function () {
+    function tick() {
         Java.perform(function () {
             captureOriginal();
             var want = readCtrl();
@@ -633,7 +663,12 @@ Java.perform(function () {
                 withActivity(restore);
             }
         });
-    }, 1500);
+    }
+
+    // Primeiro ciclo IMEDIATO: esperar o primeiro setInterval deixava a fileira do
+    // OEM na tela por 1,5s a mais depois de a injecao ja estar de pe.
+    tick();
+    setInterval(tick, 1500);
 
     // ── autoteste (§7.5): falha de helper aparece na injeção, não no carro ──
     (function selfTest() {

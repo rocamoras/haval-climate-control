@@ -62,6 +62,10 @@ public class FridaUtils {
 
     private static final Target[] ALL_TARGETS = { TARGET_SYSTEM_UI, TARGET_MEDIA_CENTER };
 
+    /** Teto de espera pelo fridaserver recem-iniciado. */
+    private static final long SERVER_READY_TIMEOUT_MS = 2_500;
+    private static final long SERVER_POLL_MS          = 100;
+
     /** Abaixo disso o arquivo em res/raw é um placeholder, não o binário real. */
     private static final long MIN_REAL_BINARY_BYTES = 100_000L;
 
@@ -165,15 +169,22 @@ public class FridaUtils {
             if (!extract(t.scriptRes, t.scriptPath())) return "Falha ao extrair script";
 
             IShizukuService svc = IShizukuService.Stub.asInterface(Shizuku.getBinder());
-            svc.newProcess(new String[]{"setenforce", "0"}, null, null).waitFor();
-            svc.newProcess(new String[]{"chmod", "755", FRIDA_SERVER_PATH}, null, null).waitFor();
-            svc.newProcess(new String[]{"chmod", "755", FRIDA_INJECTOR_PATH}, null, null).waitFor();
+            // Num unico shell: cada newProcess() custa um fork+binder, e no boot esses
+            // milissegundos sao exatamente a janela em que a fileira do OEM aparece.
+            svc.newProcess(new String[]{"/bin/sh", "-c",
+                    "setenforce 0; chmod 755 " + FRIDA_SERVER_PATH + " " + FRIDA_INJECTOR_PATH},
+                    null, null).waitFor();
 
             String running = ShizukuUtils.runCommandAndGetOutput(new String[]{"pidof", "fridaserver"}).trim();
             if (running.isEmpty()) {
                 svc.newProcess(new String[]{"/bin/sh", "-c",
                         "setsid " + FRIDA_SERVER_PATH + " >/dev/null 2>&1 < /dev/null &"}, null, null).waitFor();
-                Thread.sleep(1500);
+                // Poll em vez de sleep fixo: o server normalmente responde em ~200ms,
+                // e esperar 1,5s sempre custava mais do que o necessario.
+                if (!waitForFridaServer(SERVER_READY_TIMEOUT_MS)) {
+                    Log.w(TAG, "[frida] fridaserver nao respondeu em "
+                            + SERVER_READY_TIMEOUT_MS + "ms, injetando de todo jeito");
+                }
             }
 
             String pid = pidOf(t);
@@ -241,6 +252,18 @@ public class FridaUtils {
             pid = ShizukuUtils.runCommandAndGetOutput(new String[]{"pidof", t.processName}).trim();
         if (pid.contains(" ")) pid = pid.split(" ")[0].trim();
         return pid;
+    }
+
+    /** true assim que `pidof fridaserver` responde, ou false no timeout. */
+    private static boolean waitForFridaServer(long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            String pid = ShizukuUtils.runCommandAndGetOutput(
+                    new String[]{"pidof", "fridaserver"}).trim();
+            if (!pid.isEmpty()) return true;
+            Thread.sleep(SERVER_POLL_MS);
+        }
+        return false;
     }
 
     private static long rawResourceSize(int resId) throws Exception {
