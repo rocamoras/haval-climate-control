@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import br.com.redesurftank.havalclimatecontrol.utils.PersistentLog
 
 object ClimateStateHolder {
 
@@ -168,8 +169,11 @@ object ClimateStateHolder {
         passengerSeatVentLevel = passengerVent ?: "--"
     }
 
+    /** A lista em memória é só o que a tela mostra; o espelho em disco é o que
+     *  sobrevive a um reinício e permite reconstruir o que o app fez antes de cair. */
     fun addLog(entry: String) {
         actionLog.add(0, entry)
         if (actionLog.size > 50) actionLog.removeAt(actionLog.lastIndex)
+        PersistentLog.write("ACAO", entry)
     }
 }

@@ -148,17 +148,47 @@ object LogUploader {
                 appendLine()
             }
 
+            // Este e o log que sobrevive a morte do processo — vem primeiro porque, na
+            // pratica, e ele que responde "por que reiniciou?". Ver PersistentLog.
+            appendLine("----- log persistente em disco -----")
+            val persisted = PersistentLog.dump(PersistentLog.DUMP_MAX_CHARS)
+            appendLine(if (persisted.isBlank()) "(vazio)" else persisted.trim())
+            appendLine()
+
             appendLine("----- logcat (ultimas $LOGCAT_LINES linhas) -----")
-            val logcat = shell(arrayOf(
-                "logcat", "-d", "-v", "time", "-t", LOGCAT_LINES.toString()
-            ))
-            appendLine(if (logcat.isBlank()) "(vazio ou Shizuku indisponivel)" else logcat)
+            if (!ShizukuUtils.isAvailable()) {
+                appendLine("(Shizuku indisponivel — logcat nao coletado)")
+            } else {
+                val r = ShizukuUtils.run(arrayOf(
+                    "logcat", "-d", "-v", "time", "-t", LOGCAT_LINES.toString()
+                ))
+                when {
+                    r.stdout.isNotBlank() -> appendLine(r.stdout)
+                    // Sem isso a secao vinha "(vazio ou Shizuku indisponivel)" sem dizer
+                    // qual dos dois era — foi o que cegou o diagnostico dos reinicios.
+                    else -> appendLine("(sem saida — ${r.describeFailure()})")
+                }
+            }
         }
     }
 
-    /** Roda um comando por Shizuku; devolve "" se o Shizuku não estiver disponível. */
-    private fun shell(cmd: Array<String>): String =
-        try { ShizukuUtils.runCommandAndGetOutput(cmd) } catch (e: Exception) { "" }
+    /**
+     * Roda um comando por Shizuku. Em caso de falha devolve a explicação entre
+     * parênteses em vez de "" — no log de diagnóstico, saber que o comando falhou
+     * (e por quê) vale mais que um campo em branco.
+     */
+    private fun shell(cmd: Array<String>): String {
+        val r = try {
+            ShizukuUtils.run(cmd)
+        } catch (e: Exception) {
+            return "(falhou: ${e.message})"
+        }
+        return when {
+            r.stdout.isNotBlank() -> r.stdout
+            r.ok()                -> ""
+            else                  -> "(falhou: ${r.describeFailure()})"
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────
     // Firebase por REST
