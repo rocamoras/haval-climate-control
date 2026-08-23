@@ -37,8 +37,33 @@ object LogUploader {
     private const val SIGNUP_URL =
         "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=$API_KEY"
 
-    /** Linhas de logcat coletadas. Acima disso o upload fica grande sem ganho. */
-    private const val LOGCAT_LINES = 3000
+    /**
+     * Quantas entradas pedimos ao logd. `-t N` faz o tail NO SERVIDOR, antes de
+     * qualquer filtro do cliente — então silenciar tags não alarga a janela de
+     * tempo, só devolve menos linhas do mesmo intervalo. Por isso pedimos muito e
+     * cortamos aqui: medido em campo, 3000 entradas cruas cobriam 1min44.
+     */
+    private const val LOGCAT_BUFFER_LINES = 20_000
+
+    /** Teto do que vai para o arquivo depois do filtro. */
+    private const val LOGCAT_KEEP_LINES = 4000
+
+    /** O buffer `crash` é minúsculo e é onde mora o que interessa de verdade. */
+    private const val LOGCAT_CRASH_LINES = 300
+
+    /**
+     * Tags do OEM que só fazem volume. Medido no log de 2026-08-23: sete tags
+     * ocupavam 57% de uma janela de 1min44, e `PhoneInterfaceManager: No UICC`
+     * sozinho fazia ~7 linhas/s. `TransferThread` NÃO entra aqui de propósito — é
+     * sinal de diagnóstico do Shizuku. Nada com ':' no nome: o filterspec do logcat
+     * é `tag:prioridade`, e um ':' no meio da tag quebra o parsing.
+     */
+    private val LOGCAT_NOISY_TAGS = listOf(
+        "PhoneInterfaceManager", "RBSLibWrapper", "BeanSystemUILog",
+        "GnpSdk", "SBRAudio", "AppList", "beantee", "IqqiInputType"
+    )
+
+    private val LOGCAT_STAMP = Regex("\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d+")
 
     /** Resultado do upload: URL de download, ou a mensagem de erro. */
     sealed class Result {
@@ -155,19 +180,16 @@ object LogUploader {
             appendLine(if (persisted.isBlank()) "(vazio)" else persisted.trim())
             appendLine()
 
-            appendLine("----- logcat (ultimas $LOGCAT_LINES linhas) -----")
             if (!ShizukuUtils.isAvailable()) {
+                appendLine("----- logcat -----")
                 appendLine("(Shizuku indisponivel — logcat nao coletado)")
             } else {
-                val r = ShizukuUtils.run(arrayOf(
-                    "logcat", "-d", "-v", "time", "-t", LOGCAT_LINES.toString()
-                ))
-                when {
-                    r.stdout.isNotBlank() -> appendLine(r.stdout)
-                    // Sem isso a secao vinha "(vazio ou Shizuku indisponivel)" sem dizer
-                    // qual dos dois era — foi o que cegou o diagnostico dos reinicios.
-                    else -> appendLine("(sem saida — ${r.describeFailure()})")
-                }
+                appendLine("----- logcat: buffer crash -----")
+                appendLine(crashBuffer())
+                appendLine()
+
+                appendLine("----- logcat: buffer principal -----")
+                appendLine(mainLogcat())
             }
         }
     }
@@ -188,6 +210,61 @@ object LogUploader {
             r.ok()                -> ""
             else                  -> "(falhou: ${r.describeFailure()})"
         }
+    }
+
+    /** Só os crashes. Buffer separado, pequeno e de altíssimo valor por byte. */
+    private fun crashBuffer(): String {
+        val r = ShizukuUtils.run(arrayOf(
+            "logcat", "-b", "crash", "-d", "-v", "time", "-t", LOGCAT_CRASH_LINES.toString()
+        ))
+        return when {
+            r.stdout.isNotBlank() -> r.stdout
+            r.ok()                -> "(vazio — nenhum crash registrado)"
+            else                  -> "(sem saida — ${r.describeFailure()})"
+        }
+    }
+
+    /**
+     * Buffer principal com as tags de ruído silenciadas, pedindo bem mais entradas
+     * do que vamos guardar — é o que efetivamente alarga a janela de tempo.
+     */
+    private fun mainLogcat(): String {
+        // O `*:V` no fim é obrigatório: com qualquer filterspec presente, o que não
+        // for citado herda a prioridade default e o resultado viraria quase nada.
+        val cmd = mutableListOf("logcat", "-d", "-v", "time", "-t", LOGCAT_BUFFER_LINES.toString())
+        LOGCAT_NOISY_TAGS.forEach { cmd.add("$it:S") }
+        cmd.add("*:V")
+
+        var result = ShizukuUtils.run(cmd.toTypedArray())
+        var note   = "${LOGCAT_NOISY_TAGS.size} tags do OEM silenciadas"
+
+        // Se este device não aceitar o filterspec como esperado, a saída vem vazia ou
+        // absurdamente curta — melhor cair pro logcat cru que entregar nada.
+        if (countLines(result.stdout) < 50) {
+            val raw = ShizukuUtils.run(arrayOf(
+                "logcat", "-d", "-v", "time", "-t", LOGCAT_KEEP_LINES.toString()
+            ))
+            if (countLines(raw.stdout) > countLines(result.stdout)) {
+                result = raw
+                note   = "sem filtro (o filterspec nao pegou)"
+            }
+        }
+
+        if (result.stdout.isBlank()) return "(sem saida — ${result.describeFailure()})"
+
+        val all  = result.stdout.lines()
+        val kept = if (all.size > LOGCAT_KEEP_LINES) all.takeLast(LOGCAT_KEEP_LINES) else all
+        return "($note; ${kept.size} de ${all.size} linhas${describeWindow(kept)})\n" +
+                kept.joinToString("\n")
+    }
+
+    private fun countLines(s: String): Int = if (s.isBlank()) 0 else s.count { it == '\n' } + 1
+
+    /** ", janela HH:MM:SS → HH:MM:SS" — dá a dimensão temporal do que foi coletado. */
+    private fun describeWindow(lines: List<String>): String {
+        val stamps = lines.mapNotNull { LOGCAT_STAMP.find(it)?.value }
+        if (stamps.isEmpty()) return ""
+        return ", janela ${stamps.first()} → ${stamps.last()}"
     }
 
     // ─────────────────────────────────────────────────────────────

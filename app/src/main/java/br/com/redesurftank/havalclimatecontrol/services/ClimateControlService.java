@@ -77,6 +77,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final long   EVAL_DEBOUNCE_MS     = 50;     // coalesce bursts de onDataChanged numa única avaliação
     private static final long   IPTABLES_REFRESH_MS  = 60_000; // re-assert da regra iptables (idempotente, antes 15s)
     private static final long   BOOTSTRAP_BACKOFF_MAX_MS = 30_000;
+    // Medido em campo (log de 23/08): em boot frio o binder do Shizuku leva 4,3s e
+    // 6,3s para chegar. O timeout antigo de 10s deixava 37% de margem — um boot mais
+    // lento caia em restart(), que na pratica so recomeca a mesma espera. Esperar mais
+    // e de graca: se o binder chega, seguimos na hora.
+    private static final long   SHIZUKU_BINDER_TIMEOUT_MS    = 30_000;
+    // Depois de subir o servidor via telnet o restart TEM valor (refaz o bootstrap),
+    // então aqui a espera fica curta de proposito — mas nao tao curta quanto 5s.
+    private static final long   SHIZUKU_BOOTSTRAP_TIMEOUT_MS = 15_000;
 
     private static final String PROP_AUTO_ENABLE = "car.hvac.auto_enable";
     private static final String PROP_INSIDE_TEMP = "car.basic.inside_temp";
@@ -137,6 +145,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private boolean isShizukuInitialized = false;
     private boolean isServiceRunning     = false;
+    /** elapsedRealtime de quando comecamos a esperar o binder — vira metrica no log. */
+    private volatile long binderWaitStartedMs = 0;
 
     // Listeners guardados em campos: `this::metodo` cria uma instancia de lambda NOVA
     // a cada avaliacao, entao removeXListener(this::metodo) nunca removia o que havia
@@ -244,30 +254,36 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                     .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
 
             boolean needsBootstrap = true;
+            int selfUid = -1;
             try {
                 var selfInfo = getApplicationContext().getPackageManager()
                         .getApplicationInfo(getApplicationContext().getPackageName(), 0);
+                selfUid = selfInfo.uid;
                 if (selfInfo.uid > 10999) {
                     // Regular user app — Shizuku is started by app-tool; just wait for the binder
-                    Log.w(TAG, "UID > 10999, skipping Shizuku bootstrap, waiting for existing binder...");
                     needsBootstrap = false;
                 }
             } catch (Exception e) {
-                Log.e(TAG, "Failed to get application info: " + e.getMessage(), e);
+                PersistentLog.e(TAG, "falha lendo o ApplicationInfo: " + e);
             }
+            PersistentLog.w(TAG, "uid=" + selfUid + " → caminho: "
+                    + (needsBootstrap ? "bootstrap do Shizuku por telnet"
+                                      : "esperar o binder existente (subido pelo app-tool)"));
 
             final String cachedLibLocation = prefs.getString(KEY_SHIZUKU_LIB, "");
 
             final Runnable timeoutRunnable = () -> {
                 if (!isShizukuInitialized) {
-                    restart("timeout esperando o binder do Shizuku");
+                    restart("timeout esperando o binder do Shizuku apos "
+                            + waitedForBinderMs() + "ms");
                 }
             };
 
             if (!needsBootstrap) {
                 // Shizuku already running (started by app-tool); just attach to the existing binder
+                binderWaitStartedMs = SystemClock.elapsedRealtime();
                 Shizuku.addBinderReceivedListenerSticky(binderReceivedListener);
-                backgroundHandler.postDelayed(timeoutRunnable, 10000);
+                backgroundHandler.postDelayed(timeoutRunnable, SHIZUKU_BINDER_TIMEOUT_MS);
             } else {
                 final int[] bootstrapAttempt = {0};
                 backgroundHandler.post(new Runnable() {
@@ -292,8 +308,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             telnetClient.disconnect();
 
                             bootstrapAttempt[0] = 0;
+                            binderWaitStartedMs = SystemClock.elapsedRealtime();
                             Shizuku.addBinderReceivedListenerSticky(binderReceivedListener);
-                            backgroundHandler.postDelayed(timeoutRunnable, 5000);
+                            backgroundHandler.postDelayed(timeoutRunnable, SHIZUKU_BOOTSTRAP_TIMEOUT_MS);
                         } catch (Exception e) {
                             // Backoff exponencial (1s→2s→…→30s) para não martelar o Telnet em falha persistente.
                             long backoff = Math.min(BOOTSTRAP_BACKOFF_MAX_MS,
@@ -318,10 +335,16 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private synchronized void onShizukuBinderReceived() {
         if (!isServiceRunning) return;
         Shizuku.removeBinderReceivedListener(binderReceivedListener);
-        PersistentLog.w(TAG, "binder do Shizuku recebido");
+        PersistentLog.w(TAG, "binder do Shizuku recebido apos " + waitedForBinderMs() + "ms");
         isShizukuInitialized = true;
         backgroundHandler.removeCallbacksAndMessages(null);
         checkAndInitialize();
+    }
+
+    /** Quanto tempo esperamos pelo binder, em ms; -1 se a espera nem comecou. */
+    private long waitedForBinderMs() {
+        long started = binderWaitStartedMs;
+        return started == 0 ? -1 : SystemClock.elapsedRealtime() - started;
     }
 
     private void checkAndInitialize() {
