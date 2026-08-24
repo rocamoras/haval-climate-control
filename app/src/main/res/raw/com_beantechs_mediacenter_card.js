@@ -3,8 +3,9 @@
  *
  * Substitui a fileira de mídia online da tela principal por um card próprio com
  * o estado do ar-condicionado: A/C ligado, temperatura interna e velocidade do
- * vento. Visual copiado do HMI do app (HmiSurface #141414, borda 7% branco,
- * accent #22C55E), desenhado num Bitmap por Canvas — o APK do OEM não aceita
+ * vento. Fundo igual aos cards de mídia local do OEM (degradê a 135 graus,
+ * translúcido, medido no APK — ver preview/home-card-fundo-oem.html), tipografia
+ * e accent #22C55E do HMI do app, desenhado num Bitmap por Canvas — o APK do OEM não aceita
  * recursos novos, e desenhar tudo num bitmap dá controle exato do layout sem
  * aninhar Views via Frida.
  *
@@ -85,6 +86,8 @@ Java.perform(function () {
     var PAlign    = Java.use("android.graphics.Paint$Align");
     var RectF     = Java.use("android.graphics.RectF");
     var Typeface  = Java.use("android.graphics.Typeface");
+    var LinGrad   = Java.use("android.graphics.LinearGradient");
+    var TileMode  = Java.use("android.graphics.Shader$TileMode");
 
     var PAC = null;
     try {
@@ -103,7 +106,17 @@ Java.perform(function () {
     // ── paleta (idêntica ao HmiTheme do app) ────────────────────────────────
     // `|0` converte para int com sinal: 0xFF141414 estoura o range de int Java
     // e o marshaller do Frida rejeita o número sem a conversão.
-    var C_SURFACE     = 0xFF141414 | 0;
+    var C_SURFACE     = 0xFF141414 | 0;   // legado — o fundo agora e o degrade do OEM
+    // Fundo dos cards de midia local da MediaCenter, medido pixel a pixel em
+    // drawable-night/main_local_media_card_common_bg_nor.webp (210x197 esticado
+    // para 214x192dp): degrade a 135 graus, translucido, com borda de 1px que
+    // segue o mesmo eixo. Alpha 0xD1 (0,82) no preenchimento e 0xDC (0,86) na
+    // borda — a translucidez deixa o main_bg.webp da home aparecer, igual aos
+    // cards do OEM. Ver preview/home-card-fundo-oem.html.
+    var G_BG_COLORS   = [0xD12D2F33 | 0, 0xD1242627 | 0, 0xD1212325 | 0, 0xD11E2021 | 0];
+    var G_BG_STOPS    = [0.0, 0.22, 0.52, 1.0];
+    var G_EDGE_COLORS = [0xDC535557 | 0, 0xDC4B4D4F | 0, 0xDC3C3E40 | 0, 0xDC2C2D31 | 0];
+    var G_EDGE_STOPS  = [0.0, 0.22, 0.55, 1.0];
     var C_SURFACE2    = 0xFF1C1C1C | 0;
     var C_FG          = 0xFFFAFAFA | 0;
     var C_MUTED       = 0xFFA3A3A3 | 0;
@@ -175,6 +188,20 @@ Java.perform(function () {
             p.setStrokeWidth(strokeW);
             p.setStrokeCap(PCap.ROUND.value);
         }
+        return p;
+    }
+
+    /** Paint com LinearGradient no eixo (0,0)->(W,H) — o mesmo do fundo do OEM. */
+    function gradPaint(colors, stops, strokeW) {
+        var p = Paint.$new.overload().call(Paint);
+        p.setAntiAlias(true);
+        p.setStyle(strokeW ? PStyle.STROKE.value : PStyle.FILL.value);
+        if (strokeW) p.setStrokeWidth(strokeW);
+        p.setShader(LinGrad.$new.overload("float", "float", "float", "float",
+            "[I", "[F", "android.graphics.Shader$TileMode")
+            .call(LinGrad, 0.0, 0.0, W, H,
+                Java.array("int", colors), Java.array("float", stops),
+                TileMode.CLAMP.value));
         return p;
     }
 
@@ -258,9 +285,9 @@ Java.perform(function () {
             .call(Bitmap, W, H, BmpConfig.ARGB_8888.value);
         var cv = Canvas.$new.overload("android.graphics.Bitmap").call(Canvas, bmp);
 
-        // fundo + borda
-        roundRect(cv, 0.5, 0.5, W - 0.5, H - 0.5, 24, newPaint(C_SURFACE, false, 0));
-        roundRect(cv, 0.5, 0.5, W - 0.5, H - 0.5, 24, newPaint(C_BORDER, true, 1));
+        // fundo + borda — degrade do OEM (mesmo eixo nos dois), raio 24 nosso
+        roundRect(cv, 0.5, 0.5, W - 0.5, H - 0.5, 24, gradPaint(G_BG_COLORS, G_BG_STOPS, 0));
+        roundRect(cv, 0.5, 0.5, W - 0.5, H - 0.5, 24, gradPaint(G_EDGE_COLORS, G_EDGE_STOPS, 1));
 
         var acOn   = s.on && s.ac;
         var autoOn = s.on && s.auto;
