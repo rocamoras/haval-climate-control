@@ -28,3 +28,30 @@ The `versionName` is what the update button in `MainActivity.kt` compares agains
 - Área de trabalho real do app: **1792 × 660 dp** (descontando a status bar de ~60dp no topo).
 - A tela é muito mais larga que alta (2.49:1) — prefira layouts horizontais, evite `Column` longas que precisam de scroll.
 - `fillMaxSize()` ocupa os 1792 × 660 dp úteis.
+
+## Cards na Home da MediaCenter — convivência com o haval-ev-manager
+
+Os dois apps injetam agentes Frida no MESMO processo (`com.beantechs.mediacenter`) e
+desenham um card cada no `online_music_container`:
+
+| App | Script | Slot | Tag da view | CP virtual | Arquivo de controle |
+|---|---|---|---|---|---|
+| haval-climate-control | `com_beantechs_mediacenter_card.js` | 0 (esquerda) | `hcc-home-card` | 590 | `/data/local/tmp/haval_home_card` |
+| haval-ev-manager | `com_beantechs_mediacenter_ev_card.js` | 1 (direita) | `hem-home-card` | 591 | `/data/local/tmp/haval_ev_home_card` |
+
+**Protocolo (baseado só nas views — o processo da MediaCenter não escreve em `/data/local/tmp`):**
+- Ninguém chama `removeAllViews()`. A limpeza (`clearForeign`) tira só o que **não**
+  está em `CARD_TAGS` — os ícones do OEM saem, o card do parceiro fica. Sem isso os
+  dois se apagam em looping a cada tick de 1,5 s.
+- A posição sai de `insertIndex()` (ordem de `CARD_TAGS`), não de quem pintou primeiro.
+  Cabem os dois: `536 + 24 + 536 = 1096` px nos 1158 px da fileira.
+- **Dono** = card de menor slot presente na fileira. Só o dono mexe no que é global:
+  título "Mídia online", `topMargin` da fileira e `restore()`. Se o clima desligar com o
+  card de carga ativo, ele remove só a própria view e o ev-manager assume no próximo tick.
+- `origRowTop`: quem encontra a fileira já içada (`topMargin == ROW_TOP`) assume o valor
+  de fábrica medido (`ROW_TOP_DEFAULT = 168`) em vez de gravar 100 como "original".
+
+**fridaserver compartilhado:** é único (`/data/local/tmp/fridaserver`). `stopTarget()` só
+o derruba quando nenhum script dos dois apps está injetado (`EXTERNAL_SCRIPTS` em
+`FridaUtils`), e o binário não é reextraído com o server de pé (ETXTBSY). Os dois apps
+precisam da mesma versão do Frida — **16.7.19**, fixada nos dois workflows de CI.

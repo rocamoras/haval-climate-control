@@ -62,6 +62,13 @@ public class FridaUtils {
 
     private static final Target[] ALL_TARGETS = { TARGET_SYSTEM_UI, TARGET_MEDIA_CENTER };
 
+    /**
+     * Scripts de OUTROS apps que compartilham este fridaserver — hoje o card de
+     * carga do haval-ev-manager, injetado na mesma MediaCenter. Derrubar o server
+     * com um deles vivo mataria a injeção do vizinho junto.
+     */
+    private static final String[] EXTERNAL_SCRIPTS = { "com_beantechs_mediacenter_ev_card" };
+
     /** Teto de espera pelo fridaserver recem-iniciado. */
     private static final long SERVER_READY_TIMEOUT_MS = 2_500;
     private static final long SERVER_POLL_MS          = 100;
@@ -164,8 +171,14 @@ public class FridaUtils {
         if (!fridaToolsEmbedded())
             return "Binários do Frida ausentes neste APK (placeholder). Use o APK do Release/CI.";
         try {
-            if (!extract(R.raw.fridaserver, FRIDA_SERVER_PATH)) return "Falha ao extrair fridaserver";
-            if (!extract(R.raw.fridainject, FRIDA_INJECTOR_PATH)) return "Falha ao extrair fridainjector";
+            // Com o server já de pé (nosso ou do app vizinho), sobrescrever o binário
+            // dá ETXTBSY e ainda arriscaria trocar a versão debaixo da injeção viva.
+            boolean serverRunning = !ShizukuUtils.runCommandAndGetOutput(
+                    new String[]{"pidof", "fridaserver"}).trim().isEmpty();
+            if (!serverRunning) {
+                if (!extract(R.raw.fridaserver, FRIDA_SERVER_PATH)) return "Falha ao extrair fridaserver";
+                if (!extract(R.raw.fridainject, FRIDA_INJECTOR_PATH)) return "Falha ao extrair fridainjector";
+            }
             if (!extract(t.scriptRes, t.scriptPath())) return "Falha ao extrair script";
 
             IShizukuService svc = IShizukuService.Stub.asInterface(Shizuku.getBinder());
@@ -175,8 +188,7 @@ public class FridaUtils {
                     "setenforce 0; chmod 755 " + FRIDA_SERVER_PATH + " " + FRIDA_INJECTOR_PATH},
                     null, null).waitFor();
 
-            String running = ShizukuUtils.runCommandAndGetOutput(new String[]{"pidof", "fridaserver"}).trim();
-            if (running.isEmpty()) {
+            if (!serverRunning) {
                 svc.newProcess(new String[]{"/bin/sh", "-c",
                         "setsid " + FRIDA_SERVER_PATH + " >/dev/null 2>&1 < /dev/null &"}, null, null).waitFor();
                 // Poll em vez de sleep fixo: o server normalmente responde em ~200ms,
@@ -240,7 +252,18 @@ public class FridaUtils {
 
     private static boolean anyInjectionAlive() {
         for (Target t : ALL_TARGETS) if (isInjectionAlive(t)) return true;
+        for (String s : EXTERNAL_SCRIPTS) if (scriptAlive(s)) return true;
         return false;
+    }
+
+    /** true se existe um injetor rodando com este nome de script na linha de comando. */
+    private static boolean scriptAlive(String scriptName) {
+        try {
+            return !ShizukuUtils.runCommandAndGetOutput(
+                    new String[]{"pgrep", "-f", scriptName}).trim().isEmpty();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /** pid atual do processo do alvo (vazio se não estiver rodando). */
