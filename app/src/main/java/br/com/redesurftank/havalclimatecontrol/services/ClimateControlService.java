@@ -57,6 +57,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String PREFS_NAME          = "climate_control_prefs";
     private static final String KEY_SHIZUKU_LIB     = "shizuku_lib_location";
     private static final String KEY_INSTALLED_CHECK = "self_installation_integrity_check";
+    // Autoriza este app a SUBIR o shizuku_server por telnet. Default false: numa central
+    // com o app-tool (Impulse) instalado, quem sobe o server e ele — e o server e
+    // singleton, quem sobe depois mata quem estava lá. Subir por conta propria ali
+    // derrubaria o server do Impulse, e se ele reagisse subindo o dele de novo os dois
+    // ficariam se matando em loop. Fica aqui em climate_control_prefs (device-protected)
+    // de proposito: onStartCommand roda no LOCKED_BOOT_COMPLETED, antes do unlock, e
+    // climate_ui_prefs (credential-protected) leria false sempre no boot frio.
+    private static final String KEY_START_SHIZUKU   = "start_shizuku_server";
 
     // Prefs da UI (climate_ui_prefs) — lidos direto pelo serviço no boot, pois o
     // espelho em ClimateStateHolder só é populado quando a Activity é aberta.
@@ -144,6 +152,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private boolean isShizukuInitialized = false;
+    /** Espelha KEY_START_SHIZUKU no ciclo atual, só para a mensagem de timeout. */
+    private boolean bootstrapAllowed = false;
     private boolean isServiceRunning     = false;
     /** elapsedRealtime de quando comecamos a esperar o binder — vira metrica no log. */
     private volatile long binderWaitStartedMs = 0;
@@ -253,29 +263,47 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             SharedPreferences prefs = App.getDeviceProtectedContext()
                     .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
 
-            boolean needsBootstrap = true;
+            // Quem decide se subimos o server e a pref, nao mais o uid: um app de usuario
+            // numa central sem o Impulse ficava esperando para sempre um binder que
+            // ninguem ia subir. O uid continua no log porque ainda explica a permissao
+            // que temos para falar com o telnet.
+            boolean needsBootstrap = prefs.getBoolean(KEY_START_SHIZUKU, false);
+            bootstrapAllowed = needsBootstrap;
             int selfUid = -1;
             try {
-                var selfInfo = getApplicationContext().getPackageManager()
-                        .getApplicationInfo(getApplicationContext().getPackageName(), 0);
-                selfUid = selfInfo.uid;
-                if (selfInfo.uid > 10999) {
-                    // Regular user app — Shizuku is started by app-tool; just wait for the binder
-                    needsBootstrap = false;
-                }
+                selfUid = getApplicationContext().getPackageManager()
+                        .getApplicationInfo(getApplicationContext().getPackageName(), 0).uid;
             } catch (Exception e) {
                 PersistentLog.e(TAG, "falha lendo o ApplicationInfo: " + e);
             }
-            PersistentLog.w(TAG, "uid=" + selfUid + " → caminho: "
+            PersistentLog.w(TAG, "uid=" + selfUid + " start_shizuku_server=" + needsBootstrap
+                    + " → caminho: "
                     + (needsBootstrap ? "bootstrap do Shizuku por telnet"
                                       : "esperar o binder existente (subido pelo app-tool)"));
+            // O firewall por uid do Android barra o loopback:23 para uid alto, e a regra
+            // que libera (IPTablesUtils) só entra depois que o Shizuku esta de pe — ou
+            // seja, circular. Sem uid baixo o bootstrap nao tem como dar certo; avisa
+            // no log em vez de deixar o backoff girando calado.
+            if (needsBootstrap && selfUid > 10999) {
+                PersistentLog.e(TAG, "start_shizuku_server=true mas uid=" + selfUid
+                        + " (>10999): o telnet:23 esta barrado pelo firewall e o bootstrap"
+                        + " deve falhar — reinstale o app pelo metodo que da uid baixo");
+            }
 
-            final String cachedLibLocation = prefs.getString(KEY_SHIZUKU_LIB, "");
+            // Holder e nao String final porque o caminho pode ser invalidado no meio das
+            // tentativas: se o libshizuku.so morava no APK do app-tool e ele foi
+            // desinstalado, o cache aponta para um arquivo que nao existe mais.
+            final String[] cachedLibLocation = { prefs.getString(KEY_SHIZUKU_LIB, "") };
 
             final Runnable timeoutRunnable = () -> {
                 if (!isShizukuInitialized) {
+                    // Sem essa dica o carro sem Impulse fica num loop de 30s sem dizer o
+                    // que fazer — e a gente so descobria quando alguem mandava o log.
+                    String hint = bootstrapAllowed ? ""
+                            : " — nenhum app-tool subiu o server e \"Subir servidor do Shizuku\""
+                              + " esta desligado no Debug; ligue essa opcao nesta central";
                     restart("timeout esperando o binder do Shizuku apos "
-                            + waitedForBinderMs() + "ms");
+                            + waitedForBinderMs() + "ms" + hint);
                 }
             };
 
@@ -290,13 +318,36 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                     @Override
                     public void run() {
                         try {
+                            // Guard: a pref autoriza subir o server, mas nao autoriza matar
+                            // um que ja esteja de pe. Rodar o libshizuku.so mata o
+                            // shizuku_server existente (ver o regex "killed ... " abaixo), e
+                            // se esse for o do Impulse a gente derruba o app dele de graca.
+                            if (ShizukuUtils.isAvailable()) {
+                                PersistentLog.w(TAG, "server do Shizuku de terceiro ja ativo"
+                                        + " — anexando ao binder existente em vez de subir o nosso");
+                                binderWaitStartedMs = SystemClock.elapsedRealtime();
+                                Shizuku.addBinderReceivedListenerSticky(binderReceivedListener);
+                                backgroundHandler.postDelayed(timeoutRunnable,
+                                        SHIZUKU_BINDER_TIMEOUT_MS);
+                                return;
+                            }
+
                             TelnetClientWrapper telnetClient = new TelnetClientWrapper();
                             telnetClient.connect("127.0.0.1", 23);
-                            String filePath = cachedLibLocation;
+                            String filePath = cachedLibLocation[0];
+                            if (!filePath.isEmpty()
+                                    && !telnetClient.executeCommand("ls " + filePath).contains(filePath)) {
+                                PersistentLog.w(TAG, "libshizuku.so cacheado sumiu (" + filePath
+                                        + ") — app-tool desinstalado? refazendo o find");
+                                prefs.edit().remove(KEY_SHIZUKU_LIB).apply();
+                                cachedLibLocation[0] = "";
+                                filePath = "";
+                            }
                             if (filePath.isEmpty()) {
                                 filePath = telnetClient.executeCommand("find /data/app -name libshizuku.so");
                                 if (filePath.isEmpty()) throw new RuntimeException("libshizuku.so not found");
                                 prefs.edit().putString(KEY_SHIZUKU_LIB, filePath).apply();
+                                cachedLibLocation[0] = filePath;
                                 Log.w(TAG, "libshizuku.so found at: " + filePath);
                             }
 

@@ -15,8 +15,8 @@ android {
         minSdk = 28
         //noinspection ExpiredTargetSdkVersion
         targetSdk = 28
-        versionCode = 38
-        versionName = "1.17.0"
+        versionCode = 39
+        versionName = "1.18.0"
     }
 
     signingConfigs {

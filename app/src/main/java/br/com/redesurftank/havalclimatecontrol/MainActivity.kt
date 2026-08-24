@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import br.com.redesurftank.havalclimatecontrol.ui.theme.HavalClimateControlTheme
+import br.com.redesurftank.havalclimatecontrol.services.ClimateControlService
 import br.com.redesurftank.havalclimatecontrol.utils.FridaUtils
 import br.com.redesurftank.havalclimatecontrol.utils.LogUploader
 import br.com.redesurftank.havalclimatecontrol.utils.SystemPropsUtils
@@ -72,6 +73,12 @@ private const val KEY_COMFORT_MODE         = "comfort_mode"
 private const val KEY_REAL_OUTSIDE_TEMP    = "real_outside_temp_enabled"
 private const val KEY_HOME_CARD            = "home_card_enabled"
 private const val UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
+
+// Prefs do serviço (device-protected). A flag do Shizuku mora aqui e não em UI_PREFS
+// porque o serviço a lê no LOCKED_BOOT_COMPLETED, antes do unlock — em credential
+// storage ela leria false em todo boot frio.
+private const val SERVICE_PREFS            = "climate_control_prefs"
+private const val KEY_START_SHIZUKU        = "start_shizuku_server"
 
 // ─────────────────────────────────────────────────────────────
 // HMI color tokens — monochromatic dark, accent only for active
@@ -1891,6 +1898,20 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     var showCardHelp by remember { mutableStateOf(false) }
     val fridaAvailable = remember { FridaUtils.fridaToolsEmbedded() }
 
+    // Device-protected: é o mesmo store que o serviço lê no boot travado.
+    val servicePrefs = remember {
+        App.getDeviceProtectedContext().getSharedPreferences(SERVICE_PREFS, Context.MODE_PRIVATE)
+    }
+    var startShizukuEnabled by remember {
+        mutableStateOf(servicePrefs.getBoolean(KEY_START_SHIZUKU, false))
+    }
+    var shizukuUp       by remember { mutableStateOf(SystemPropsUtils.isShizukuReady()) }
+    var showShizukuHelp by remember { mutableStateOf(false) }
+    // Acima de 10999 o firewall por uid do Android barra a conexao no telnet:23, que e
+    // o unico caminho para subir o servidor. Sem uid baixo a flag nao tem como funcionar.
+    val selfUid = remember { runCatching { context.applicationInfo.uid }.getOrDefault(-1) }
+    val canReachTelnet = selfUid in 0..10999
+
     Column(modifier = Modifier.fillMaxSize().background(HmiBg).padding(20.dp)) {
 
         // Header
@@ -2026,6 +2047,94 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
 
         Spacer(Modifier.height(14.dp))
 
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+            shape    = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment     = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier              = Modifier.weight(1f),
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            "Subir servidor do Shizuku",
+                            fontSize   = 17.sp,
+                            fontWeight = FontWeight.Medium,
+                            color      = HmiFg
+                        )
+                        IconButton(onClick = { showShizukuHelp = true }, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Default.Info,
+                                contentDescription = "Ajuda",
+                                tint     = HmiFgMuted,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Switch(
+                        checked         = startShizukuEnabled,
+                        onCheckedChange = { enabled ->
+                            startShizukuEnabled = enabled
+                            servicePrefs.edit().putBoolean(KEY_START_SHIZUKU, enabled).apply()
+                            // A decisão é tomada no onStartCommand, então só vale no próximo
+                            // ciclo: para e sobe de novo para a pref valer agora.
+                            val intent = Intent(context, ClimateControlService::class.java)
+                            runCatching {
+                                context.stopService(intent)
+                                context.startForegroundService(intent)
+                            }
+                            shizukuUp = SystemPropsUtils.isShizukuReady()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor   = Color.White,
+                            checkedTrackColor   = HmiAccent,
+                            uncheckedThumbColor = HmiFgMuted,
+                            uncheckedTrackColor = HmiSurface
+                        )
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (shizukuUp) "Shizuku agora: ativo" else "Shizuku agora: indisponível",
+                    fontSize = 13.sp,
+                    color    = if (shizukuUp) HmiFgMuted else Color(0xFFFF7043)
+                )
+                Text(
+                    "uid do app: " + (if (selfUid >= 0) selfUid.toString() else "?"),
+                    fontSize = 13.sp,
+                    color    = HmiFgMuted
+                )
+                if (startShizukuEnabled) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "⚠ Só mantenha ligado em centrais sem Impulse. Se já houver um servidor " +
+                        "do Shizuku no ar, o app anexa nele e não sobe o seu.",
+                        fontSize = 13.sp,
+                        color    = Color(0xFFFFB74D)
+                    )
+                    if (!canReachTelnet) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "⚠ uid acima de 10999: o firewall da central barra o telnet na porta 23, " +
+                            "então subir o servidor vai falhar. Precisa reinstalar o app pelo método " +
+                            "que dá uid baixo (script de instalação com injeção no system_server).",
+                            fontSize = 13.sp,
+                            color    = Color(0xFFFF7043)
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
         UpdateCard()
     }
 
@@ -2035,6 +2144,26 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
             title             = { Text("Temperatura Externa Real (UI)") },
             text              = { Text("Ativando essa opção irá desabilitar o serviço nativo da central de previsão do tempo e será mostrado a temperatura externa real.") },
             confirmButton     = { TextButton(onClick = { showHelp = false }) { Text("OK") } },
+            containerColor    = Color(0xFF1E1E1E),
+            titleContentColor = HmiFg,
+            textContentColor  = HmiFgMuted
+        )
+    }
+
+    if (showShizukuHelp) {
+        AlertDialog(
+            onDismissRequest  = { showShizukuHelp = false },
+            title             = { Text("Subir servidor do Shizuku") },
+            text              = { Text(
+                "Todo acesso ao veículo passa pelo Shizuku, e normalmente quem sobe esse " +
+                "servidor é outro app da central (o Impulse). Se ele não estiver instalado, " +
+                "ninguém sobe o servidor e este app fica sem funcionar." +
+                "\n\n" +
+                "Ative esta opção para que o próprio app suba o servidor. Deixe desligada se " +
+                "a central tiver o Impulse: existe só um servidor por central, e quem sobe " +
+                "depois derruba o anterior."
+            ) },
+            confirmButton     = { TextButton(onClick = { showShizukuHelp = false }) { Text("OK") } },
             containerColor    = Color(0xFF1E1E1E),
             titleContentColor = HmiFg,
             textContentColor  = HmiFgMuted
