@@ -358,15 +358,24 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             }
                             telnetClient.disconnect();
 
+                            PersistentLog.w(TAG, "bootstrap do Shizuku concluido na tentativa "
+                                    + (bootstrapAttempt[0] + 1) + " — esperando o binder");
                             bootstrapAttempt[0] = 0;
                             binderWaitStartedMs = SystemClock.elapsedRealtime();
                             Shizuku.addBinderReceivedListenerSticky(binderReceivedListener);
                             backgroundHandler.postDelayed(timeoutRunnable, SHIZUKU_BOOTSTRAP_TIMEOUT_MS);
                         } catch (Exception e) {
                             // Backoff exponencial (1s→2s→…→30s) para não martelar o Telnet em falha persistente.
+                            int  attempt = ++bootstrapAttempt[0];
                             long backoff = Math.min(BOOTSTRAP_BACKOFF_MAX_MS,
-                                    1000L << Math.min(bootstrapAttempt[0]++, 5));
-                            Log.e(TAG, "Error bootstrapping Shizuku (retry em " + backoff + "ms): " + e.getMessage(), e);
+                                    1000L << Math.min(attempt - 1, 5));
+                            // No log persistente, e não só no logcat: sem isso um bootstrap
+                            // que falha em loop fica INVISÍVEL exatamente no log que deveria
+                            // explicá-lo — o timeoutRunnable só é agendado depois do sucesso,
+                            // então nem a linha de REINICIO aparece. Foi o que aconteceu no
+                            // log de 2026-08-24: 12 minutos de silêncio absoluto.
+                            PersistentLog.e(TAG, "bootstrap do Shizuku falhou na tentativa "
+                                    + attempt + " (retry em " + backoff + "ms): " + e);
                             backgroundHandler.postDelayed(this, backoff);
                         }
                     }

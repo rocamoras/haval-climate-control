@@ -69,12 +69,12 @@ object LogUploader {
     // system_server. É o unico lugar que responde por que o framework morreu.
 
     private const val DROPBOX_DIR = "/data/system/dropbox"
-    /** Quantos arquivos abrimos por inteiro (os mais recentes). */
+    /** Quantos arquivos abrimos por inteiro (os de maior prioridade). */
     private const val DROPBOX_MAX_ENTRIES = 3
     /** Teto por arquivo. Cortamos o FIM: num stack trace o topo é o que importa. */
     private const val DROPBOX_MAX_CHARS_EACH = 20_000
-    /** Quantos nomes listamos para dar o panorama sem abrir todos. */
-    private const val DROPBOX_MAX_LISTED = 40
+    /** Acima desta prioridade a entrada só entra no resumo; ver [dropboxRank]. */
+    private const val DROPBOX_OPEN_MAX_RANK = 4
 
     /** Prefixos que valem a pena. O dropbox também guarda muita coisa irrelevante. */
     private val DROPBOX_INTERESTING = listOf(
@@ -274,17 +274,36 @@ object LogUploader {
 
         val all = ls.stdout.lines().map { it.trim() }.filter { it.isNotEmpty() }
         val hits = all.filter { name -> DROPBOX_INTERESTING.any { name.startsWith(it) } }
-            .sortedByDescending { dropboxStamp(it) }
         if (hits.isEmpty()) {
             return "(${all.size} entradas, nenhuma de interesse)"
         }
 
+        // Abrir "as mais recentes" era inútil: as mais recentes são sempre burocracia
+        // de boot (SYSTEM_BOOT, e 5-7 system_app_wtf do power controller do OEM por
+        // boot), e num arquivo real elas afogaram o único system_app_anr que
+        // interessava. Ordena por interesse, e só depois por recência.
+        val toOpen = hits
+            .filter { dropboxRank(it) <= DROPBOX_OPEN_MAX_RANK }
+            .sortedWith(compareBy({ dropboxRank(it) }, { -dropboxStamp(it) }))
+            .take(DROPBOX_MAX_ENTRIES)
+
         return buildString {
-            appendLine("${all.size} entradas no total, ${hits.size} de interesse " +
-                    "(abrindo as ${minOf(hits.size, DROPBOX_MAX_ENTRIES)} mais recentes):")
-            hits.take(DROPBOX_MAX_LISTED).forEach { appendLine("  $it") }
-            if (hits.size > DROPBOX_MAX_LISTED) appendLine("  … e ${hits.size - DROPBOX_MAX_LISTED} outras")
-            hits.take(DROPBOX_MAX_ENTRIES).forEach { name ->
+            appendLine("${all.size} entradas no total, ${hits.size} de interesse:")
+            // Resumo por tipo — 120 wtf do OEM viram uma linha em vez de 40 linhas
+            // de listagem que não dizem nada.
+            hits.groupBy { it.substringBefore('@') }
+                .entries
+                .sortedWith(compareBy({ dropboxRank(it.key) }, { -it.value.size }))
+                .forEach { (tag, list) ->
+                    appendLine("  ${list.size}x $tag " +
+                            "(mais recente: ${stampToText(list.maxOf { dropboxStamp(it) })})")
+                }
+
+            if (toOpen.isEmpty()) {
+                appendLine()
+                appendLine("(nenhuma entrada de alta prioridade — nada de crash/anr/tombstone)")
+            }
+            toOpen.forEach { name ->
                 appendLine()
                 appendLine("··· $name ···")
                 appendLine(readDropboxEntry(name))
@@ -292,9 +311,34 @@ object LogUploader {
         }
     }
 
+    /**
+     * Prioridade de leitura: menor abre primeiro. Acima de
+     * [DROPBOX_OPEN_MAX_RANK] a entrada só aparece no resumo — é o caso do
+     * `SYSTEM_BOOT` (build + kernel, nada mais) e do `system_app_wtf` do OEM
+     * ("Data directory doesn't exist"), que é ruído de direct boot em todo boot.
+     */
+    private fun dropboxRank(name: String): Int = when {
+        name.startsWith("system_server_crash")    -> 0
+        name.startsWith("system_server_watchdog") -> 0
+        name.startsWith("SYSTEM_TOMBSTONE")       -> 1
+        name.startsWith("system_server_anr")      -> 1
+        name.startsWith("system_app_anr")         -> 2
+        name.startsWith("data_app_anr")           -> 2
+        name.startsWith("system_app_crash")       -> 2
+        name.startsWith("data_app_crash")         -> 2
+        name.startsWith("system_server_wtf")      -> 3
+        name.startsWith("SYSTEM_LAST_KMSG")       -> 4
+        name.startsWith("SYSTEM_RESTART")         -> 4
+        else                                      -> 9
+    }
+
     /** Os nomes são `tag@<epoch em ms>.txt[.gz]`; o epoch é a ordenação confiável. */
     private fun dropboxStamp(name: String): Long =
         name.substringAfter('@', "").substringBefore('.').toLongOrNull() ?: 0L
+
+    private fun stampToText(ms: Long): String =
+        if (ms <= 0) "?"
+        else SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(ms))
 
     private fun readDropboxEntry(name: String): String {
         val path = "$DROPBOX_DIR/$name"
@@ -309,12 +353,21 @@ object LogUploader {
         else r.stdout
     }
 
-    /** Buffer de eventos reduzido ao que identifica mortes e reinícios de processo. */
+    /**
+     * Buffer de eventos reduzido ao que identifica mortes e reinícios de processo.
+     *
+     * Nesta ROM ele volta vazio com exit 0 — o buffer `events` parece desabilitado.
+     * Mantido porque custa um comando e funciona em outras centrais, mas a mensagem
+     * diz explicitamente que é isso, e não uma falha nossa.
+     */
     private fun eventsBuffer(): String {
         val r = ShizukuUtils.run(arrayOf(
             "logcat", "-b", "events", "-d", "-v", "time", "-t", LOGCAT_EVENTS_LINES.toString()
         ))
-        if (r.stdout.isBlank()) return "(sem saida — ${r.describeFailure()})"
+        if (r.stdout.isBlank()) {
+            return if (r.ok()) "(buffer vazio ou desabilitado nesta ROM)"
+            else "(sem saida — ${r.describeFailure()})"
+        }
 
         val hits = r.stdout.lines().filter { line -> EVENT_KEYS.any { line.contains(it) } }
         if (hits.isEmpty()) {
