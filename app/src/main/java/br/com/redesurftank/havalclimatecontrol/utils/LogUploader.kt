@@ -51,6 +51,40 @@ object LogUploader {
     /** O buffer `crash` é minúsculo e é onde mora o que interessa de verdade. */
     private const val LOGCAT_CRASH_LINES = 300
 
+    /** Buffer de eventos: pedimos muito e filtramos aqui, igual ao principal. */
+    private const val LOGCAT_EVENTS_LINES = 3000
+    private const val LOGCAT_EVENTS_KEEP  = 400
+
+    /**
+     * Eventos que dizem quem matou quem. `am_proc_died`/`am_kill` identificam o
+     * responsável pela morte de um processo — o buffer de crash só mostra o efeito.
+     */
+    private val EVENT_KEYS = listOf(
+        "am_proc_died", "am_proc_start", "am_kill", "am_crash", "am_anr", "am_wtf",
+        "am_low_memory", "am_restart", "watchdog", "boot_progress_start"
+    )
+
+    // ── Dropbox ──────────────────────────────────────────────────────────────
+    // Onde o Android arquiva a primeira excecao de cada crash, inclusive as do
+    // system_server. É o unico lugar que responde por que o framework morreu.
+
+    private const val DROPBOX_DIR = "/data/system/dropbox"
+    /** Quantos arquivos abrimos por inteiro (os mais recentes). */
+    private const val DROPBOX_MAX_ENTRIES = 3
+    /** Teto por arquivo. Cortamos o FIM: num stack trace o topo é o que importa. */
+    private const val DROPBOX_MAX_CHARS_EACH = 20_000
+    /** Quantos nomes listamos para dar o panorama sem abrir todos. */
+    private const val DROPBOX_MAX_LISTED = 40
+
+    /** Prefixos que valem a pena. O dropbox também guarda muita coisa irrelevante. */
+    private val DROPBOX_INTERESTING = listOf(
+        "system_server_crash", "system_server_wtf", "system_server_anr",
+        "system_server_watchdog", "SYSTEM_TOMBSTONE", "SYSTEM_RESTART",
+        "system_app_crash", "system_app_anr", "system_app_wtf",
+        "data_app_crash", "data_app_anr", "data_app_wtf",
+        "SYSTEM_LAST_KMSG", "SYSTEM_BOOT"
+    )
+
     /**
      * Tags do OEM que só fazem volume. Medido no log de 2026-08-23: sete tags
      * ocupavam 57% de uma janela de 1min44, e `PhoneInterfaceManager: No UICC`
@@ -184,8 +218,20 @@ object LogUploader {
                 appendLine("----- logcat -----")
                 appendLine("(Shizuku indisponivel — logcat nao coletado)")
             } else {
+                // O dropbox guarda a PRIMEIRA excecao — o "earlier logs will point to
+                // the root cause" que o DeadSystemException menciona e que o buffer de
+                // crash nao tem. Ver a analise do log de 2026-08-24.
+                appendLine("----- dropbox ($DROPBOX_DIR) -----")
+                appendLine(dropbox())
+                appendLine()
+
                 appendLine("----- logcat: buffer crash -----")
                 appendLine(crashBuffer())
+                appendLine()
+
+                // Diz QUEM matou o processo, em vez de so mostrar o efeito.
+                appendLine("----- logcat: buffer events (filtrado) -----")
+                appendLine(eventsBuffer())
                 appendLine()
 
                 appendLine("----- logcat: buffer principal -----")
@@ -210,6 +256,74 @@ object LogUploader {
             r.ok()                -> ""
             else                  -> "(falhou: ${r.describeFailure()})"
         }
+    }
+
+    /**
+     * As entradas mais recentes do dropbox. Lista o panorama e abre por inteiro só
+     * as [DROPBOX_MAX_ENTRIES] últimas — um `system_server_crash` traz o stack trace
+     * da primeira exceção, que é a resposta que o `DeadSystemException` do buffer de
+     * crash não dá.
+     */
+    private fun dropbox(): String {
+        val ls = ShizukuUtils.run(arrayOf("ls", DROPBOX_DIR))
+        if (ls.stdout.isBlank()) {
+            // Sem root no Shizuku este diretório não é legível — vale dizer isso em vez
+            // de deixar a seção em branco.
+            return "(nada legivel — ${ls.describeFailure()})"
+        }
+
+        val all = ls.stdout.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val hits = all.filter { name -> DROPBOX_INTERESTING.any { name.startsWith(it) } }
+            .sortedByDescending { dropboxStamp(it) }
+        if (hits.isEmpty()) {
+            return "(${all.size} entradas, nenhuma de interesse)"
+        }
+
+        return buildString {
+            appendLine("${all.size} entradas no total, ${hits.size} de interesse " +
+                    "(abrindo as ${minOf(hits.size, DROPBOX_MAX_ENTRIES)} mais recentes):")
+            hits.take(DROPBOX_MAX_LISTED).forEach { appendLine("  $it") }
+            if (hits.size > DROPBOX_MAX_LISTED) appendLine("  … e ${hits.size - DROPBOX_MAX_LISTED} outras")
+            hits.take(DROPBOX_MAX_ENTRIES).forEach { name ->
+                appendLine()
+                appendLine("··· $name ···")
+                appendLine(readDropboxEntry(name))
+            }
+        }
+    }
+
+    /** Os nomes são `tag@<epoch em ms>.txt[.gz]`; o epoch é a ordenação confiável. */
+    private fun dropboxStamp(name: String): Long =
+        name.substringAfter('@', "").substringBefore('.').toLongOrNull() ?: 0L
+
+    private fun readDropboxEntry(name: String): String {
+        val path = "$DROPBOX_DIR/$name"
+        val gz   = name.endsWith(".gz")
+        var r = ShizukuUtils.run(arrayOf(if (gz) "zcat" else "cat", path))
+        // Nem todo toybox traz zcat; gunzip -c é o plano B antes de desistir.
+        if (gz && r.stdout.isBlank()) r = ShizukuUtils.run(arrayOf("gunzip", "-c", path))
+        if (r.stdout.isBlank()) return "(sem conteudo — ${r.describeFailure()})"
+        return if (r.stdout.length > DROPBOX_MAX_CHARS_EACH)
+            r.stdout.take(DROPBOX_MAX_CHARS_EACH) +
+                    "\n(truncado — arquivo tem ${r.stdout.length} chars)"
+        else r.stdout
+    }
+
+    /** Buffer de eventos reduzido ao que identifica mortes e reinícios de processo. */
+    private fun eventsBuffer(): String {
+        val r = ShizukuUtils.run(arrayOf(
+            "logcat", "-b", "events", "-d", "-v", "time", "-t", LOGCAT_EVENTS_LINES.toString()
+        ))
+        if (r.stdout.isBlank()) return "(sem saida — ${r.describeFailure()})"
+
+        val hits = r.stdout.lines().filter { line -> EVENT_KEYS.any { line.contains(it) } }
+        if (hits.isEmpty()) {
+            return "(${countLines(r.stdout)} eventos lidos, nenhum de interesse" +
+                    "${describeWindow(r.stdout.lines())})"
+        }
+        val kept = if (hits.size > LOGCAT_EVENTS_KEEP) hits.takeLast(LOGCAT_EVENTS_KEEP) else hits
+        return "(${kept.size} de ${countLines(r.stdout)} eventos${describeWindow(kept)})\n" +
+                kept.joinToString("\n")
     }
 
     /** Só os crashes. Buffer separado, pequeno e de altíssimo valor por byte. */
