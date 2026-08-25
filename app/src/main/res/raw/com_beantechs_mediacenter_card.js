@@ -43,10 +43,6 @@
  * Controle em runtime por /data/local/tmp/haval_home_card:
  *   "on"  -> fileira esvaziada e içada, título escondido, card desenhado
  *   "off" (ou arquivo ausente) -> restaura fileira, margem e título originais
- *
- * Convive com o card do haval-ev-manager (outro agente Frida no mesmo processo,
- * script com_beantechs_mediacenter_ev_card.js) por um protocolo de slots baseado
- * nas views — ver o bloco CARD_TAGS/SLOT abaixo.
  */
 "use strict";
 
@@ -61,20 +57,6 @@ Java.perform(function () {
     var CARD_TAG = "hcc-home-card";
     var CP_CARD  = 590;          // CP virtual: precisa cair em 501..600 p/ o onClick do OEM
     var ROW_TOP  = 100;          // topMargin da fileira com o titulo escondido
-
-    // ── convivência com o card do haval-ev-manager ──────────────────────────
-    // Os dois apps injetam agentes Frida distintos no MESMO processo e disputam o
-    // online_music_container. O protocolo é todo baseado nas VIEWS — o processo da
-    // MediaCenter não escreve em /data/local/tmp, então nada de arquivo compartilhado:
-    //   - ninguém chama removeAllViews(): a limpeza tira só o que NÃO é card
-    //     conhecido (clearForeign). Sem isso os dois se apagam em looping a cada tick.
-    //   - a ordem na fileira sai de CARD_TAGS, não de quem pintou primeiro.
-    //   - dono = card de menor slot presente na fileira; só o dono mexe no que é
-    //     global (título, topMargin, lista de CPs, restore).
-    var CARD_TAGS = ["hcc-home-card", "hem-home-card"];   // clima, ev-manager
-    var SLOT      = 0;
-    var GAP       = 24;          // respiro entre os cards: 536 + 24 + 536 = 1096 < 1158
-    var ROW_TOP_DEFAULT = 168;   // topMargin de fábrica da fileira, medido no APK
 
     // ── wrappers ───────────────────────────────────────────────────────────
     // Regra do handoff §3: instância de Java.choose expõe só os métodos da
@@ -552,61 +534,6 @@ Java.perform(function () {
         log("hook FALHOU loadOnlineMusicCard: " + e);
     }
 
-    // ── convivência entre cards (ver comentário no topo) ────────────────────
-    /** Posição do card `tag` na ordem canônica da fileira; -1 se não é card nosso. */
-    function slotOf(tag) {
-        return (tag === null) ? -1 : CARD_TAGS.indexOf(tag);
-    }
-
-    function childTag(box, i) {
-        try {
-            var t = Java.cast(box.getChildAt(i), ViewCls).getTag();
-            return (t === null) ? null : ("" + t);
-        } catch (e) {
-            return null;
-        }
-    }
-
-    /**
-     * Tira da fileira tudo que não é card conhecido — os ícones do OEM saem, o
-     * card do app parceiro fica. É o que substitui o antigo removeAllViews().
-     */
-    function clearForeign(box) {
-        for (var i = box.getChildCount() - 1; i >= 0; i--) {
-            if (slotOf(childTag(box, i)) >= 0) continue;
-            try { box.removeViewAt(i); }
-            catch (e) { logOnce("rmv:" + e, "removeViewAt err: " + e); }
-        }
-    }
-
-    /** Índice de inserção que respeita a ordem de CARD_TAGS. */
-    function insertIndex(box) {
-        var idx = 0;
-        for (var i = 0; i < box.getChildCount(); i++) {
-            var s = slotOf(childTag(box, i));
-            if (s >= 0 && s < SLOT) idx = i + 1;
-        }
-        return idx;
-    }
-
-    /** Dono = nenhum card de slot menor na fileira. Vale por tick, não se guarda. */
-    function isOwner(box) {
-        for (var i = 0; i < box.getChildCount(); i++) {
-            var s = slotOf(childTag(box, i));
-            if (s >= 0 && s < SLOT) return false;
-        }
-        return true;
-    }
-
-    /** true se o card de OUTRO app está na fileira agora. */
-    function peerPresent(box) {
-        for (var i = 0; i < box.getChildCount(); i++) {
-            var t = childTag(box, i);
-            if (t !== null && t !== CARD_TAG && slotOf(t) >= 0) return true;
-        }
-        return false;
-    }
-
     // ── montagem da view ────────────────────────────────────────────────────
     /**
      * Cria (ou reaproveita) o ImageView do card no online_music_container e
@@ -620,12 +547,6 @@ Java.perform(function () {
 
             var tagStr = Str.$new(CARD_TAG);
             var boxV   = Java.cast(boxRaw, ViewCls);
-            var box    = Java.cast(boxRaw, ViewGroupCls);
-
-            // Todo tick, não só na criação: loadOnlineMusicCard() repovoa a fileira
-            // com os ícones do OEM sempre que a Activity é recriada.
-            clearForeign(box);
-
             var found  = boxV.findViewWithTag.overload("java.lang.Object").call(boxV, tagStr);
 
             var iv;
@@ -637,12 +558,12 @@ Java.perform(function () {
                 ivV.setElevation(CP_CARD);
                 ivV.setOnClickListener(Java.cast(act, Java.use("android.view.View$OnClickListener")));
                 var lp = LLParams.$new.overload("int", "int").call(LLParams, W, H);
-                if (SLOT > 0) Java.cast(lp, MarginLP).setMargins(GAP, 0, 0, 0);
                 ivV.setLayoutParams(Java.cast(lp, VGLayoutParams));
 
-                var at = insertIndex(box);
-                box.addView.overload("android.view.View", "int").call(box, ivV, at);
-                log("card criado no container (índice " + at + ")");
+                var box = Java.cast(boxRaw, ViewGroupCls);
+                box.removeAllViews();
+                box.addView.overload("android.view.View").call(box, ivV);
+                log("card criado no container");
                 lastSig = null;                    // força a primeira pintura
             } else {
                 iv = Java.cast(found, ImageView);
@@ -655,11 +576,8 @@ Java.perform(function () {
                 log("card pintado: " + sig);
             }
 
-            // Título e margem são da fileira inteira: só o dono escreve neles.
-            if (isOwner(box)) {
-                setTitleVisible(act, false);
-                setRowTop(act, ROW_TOP);
-            }
+            setTitleVisible(act, false);
+            setRowTop(act, ROW_TOP);
         } catch (e) {
             logOnce("paint:" + e, "paintCard err: " + e + (e.stack ? " | " + e.stack : ""));
         }
@@ -693,12 +611,8 @@ Java.perform(function () {
             if (lp === null) return;
             var mlp = Java.cast(lp, MarginLP);
             if (origRowTop === null) {
-                // Se o app parceiro já içou a fileira, ROW_TOP não é o valor de
-                // fábrica — cair no medido evita restaurar a tela errada depois.
-                var cur = mlp.topMargin.value;
-                origRowTop = (cur === ROW_TOP) ? ROW_TOP_DEFAULT : cur;
-                log("topMargin original da fileira = " + origRowTop
-                    + (cur === ROW_TOP ? " (assumido; parceiro já tinha içado)" : ""));
+                origRowTop = mlp.topMargin.value;
+                log("topMargin original da fileira = " + origRowTop);
             }
             var prev = mlp.topMargin.value;
             if (prev === top) return;
@@ -710,18 +624,10 @@ Java.perform(function () {
         }
     }
 
-    /**
-     * Remove o card e devolve título e fileira ao estado de fábrica.
-     *
-     * Com o card do app parceiro ainda na tela, some SÓ com o nosso: restaurar a
-     * fileira aqui chamaria loadOnlineMusicCard() (que zera o container) e
-     * devolveria título e margem por cima do card dele. Quem restaura de verdade
-     * é o último a desligar; até lá o parceiro assume como dono no próximo tick.
-     */
+    /** Remove o card e devolve título e fileira ao estado de fábrica. */
     function restore(act) {
         try {
             var boxRaw = viewOf(act, "online_music_container");
-            var peer   = false;
             if (boxRaw !== null) {
                 var boxV  = Java.cast(boxRaw, ViewCls);
                 var found = boxV.findViewWithTag.overload("java.lang.Object")
@@ -731,13 +637,8 @@ Java.perform(function () {
                         .removeView.overload("android.view.View")
                         .call(Java.cast(boxRaw, ViewGroupCls), Java.cast(found, ViewCls));
                 }
-                peer = peerPresent(Java.cast(boxRaw, ViewGroupCls));
             }
-            if (peer) {
-                log("card removido; fileira mantida (card do app parceiro ativo)");
-                return;
-            }
-            setRowTop(act, origRowTop === null ? ROW_TOP_DEFAULT : origRowTop);
+            if (origRowTop !== null) setRowTop(act, origRowTop);
             setTitleVisible(act, true);
             act.loadOnlineMusicCard();       // redesenha os ícones de fábrica
             log("fileira original restaurada");
@@ -806,9 +707,6 @@ Java.perform(function () {
          ["stateSig",   function () { return stateSig(readState()).length > 0; }],
          ["drawCard",   function () { return drawCard(readState()) !== null; }],
          ["readCtrl",   function () { return typeof readCtrl() === "boolean"; }],
-         ["slotOf",     function () { return slotOf(CARD_TAG) === SLOT && slotOf("xpto") === -1; }],
-         // dois cards de 536 + o respiro têm de caber nos 1158 da fileira
-         ["largura",    function () { return CARD_TAGS.length * W + (CARD_TAGS.length - 1) * GAP <= 1158; }],
          // teto rígido: 430 (topo do título "Mídia local") - ROW_TOP
          ["altura",     function () { return ROW_TOP + H <= 430; }]
         ].forEach(function (par) {
