@@ -51,6 +51,18 @@ public class FridaUtils {
 
         public String scriptPath() { return "/data/local/tmp/" + scriptName + ".js"; }
         public String logPath()    { return "/data/local/tmp/" + scriptName + ".log"; }
+
+        /**
+         * Padrao de `pgrep -f` que casa o injetor mas NAO o shell que executa o pgrep.
+         * Dentro de {@link #probe} o comando inteiro vira a cmdline de um `sh -c`, e um
+         * `pgrep -f com_android_systemui` ali acharia o proprio shell e responderia
+         * "vivo" para sempre. O truque classico do colchete resolve: a regex
+         * `[c]om_...` casa o texto `com_...` do injetor e nao casa o `[c]om_...`
+         * literal da nossa propria cmdline.
+         */
+        public String pgrepPattern() {
+            return "[" + scriptName.charAt(0) + "]" + scriptName.substring(1);
+        }
     }
 
     public static final Target TARGET_SYSTEM_UI = new Target(
@@ -171,12 +183,14 @@ public class FridaUtils {
             IShizukuService svc = IShizukuService.Stub.asInterface(Shizuku.getBinder());
             // Num unico shell: cada newProcess() custa um fork+binder, e no boot esses
             // milissegundos sao exatamente a janela em que a fileira do OEM aparece.
+            ShizukuUtils.countNewProcess();
             svc.newProcess(new String[]{"/bin/sh", "-c",
                     "setenforce 0; chmod 755 " + FRIDA_SERVER_PATH + " " + FRIDA_INJECTOR_PATH},
                     null, null).waitFor();
 
             String running = ShizukuUtils.runCommandAndGetOutput(new String[]{"pidof", "fridaserver"}).trim();
             if (running.isEmpty()) {
+                ShizukuUtils.countNewProcess();
                 svc.newProcess(new String[]{"/bin/sh", "-c",
                         "setsid " + FRIDA_SERVER_PATH + " >/dev/null 2>&1 < /dev/null &"}, null, null).waitFor();
                 // Poll em vez de sleep fixo: o server normalmente responde em ~200ms,
@@ -196,6 +210,7 @@ public class FridaUtils {
             String cmd = "setsid " + FRIDA_INJECTOR_PATH + " -D local -p " + pid
                     + " -s " + t.scriptPath()
                     + " > " + t.logPath() + " 2>&1 < /dev/null &";
+            ShizukuUtils.countNewProcess();
             svc.newProcess(new String[]{"/bin/sh", "-c", cmd}, null, null).waitFor();
             Log.w(TAG, "[frida] injetado em " + t.processName + " pid=" + pid);
             return "Injetado em " + t.processName + " (pid " + pid + ")";
@@ -252,6 +267,77 @@ public class FridaUtils {
             pid = ShizukuUtils.runCommandAndGetOutput(new String[]{"pidof", t.processName}).trim();
         if (pid.contains(" ")) pid = pid.split(" ")[0].trim();
         return pid;
+    }
+
+    /** Estado de um alvo colhido por {@link #probe}. */
+    public static final class TargetStatus {
+        /** pid do processo alvo, ou "" se ele nao esta rodando. */
+        public final String  pid;
+        /** true se o processo injetor daquele alvo continua vivo. */
+        public final boolean injectorAlive;
+
+        TargetStatus(String pid, boolean injectorAlive) {
+            this.pid           = pid;
+            this.injectorAlive = injectorAlive;
+        }
+    }
+
+    /**
+     * pid + injetor vivo de todos os alvos pedidos, num UNICO newProcess.
+     *
+     * Motivo de existir: cada newProcess() forka no shizuku_server e deixa la um
+     * RemoteProcessHolder que so e liberado quando o proxy binder deste lado e
+     * coletado. Os dois watchdogs de 10s faziam 4 shells por ciclo — ~9.000 numa
+     * sessao de 5h43, e em 29/08/2026 o heap de 96MB do server estourou
+     * (OutOfMemoryError em rikka.shizuku.Jj.run), matando o binder e forcando o
+     * REINICIO "binder do Shizuku morreu". Um shell por ciclo, para todos os alvos.
+     *
+     * @return array paralelo a {@code targets}, ou null se o shell nao rodou / veio
+     *         ilegivel. null significa "nao sei" e NUNCA "caiu": tratar como caiu
+     *         faria uma falha do shell disparar re-injecao a toa.
+     */
+    public static TargetStatus[] probe(Target... targets) {
+        if (targets.length == 0) return new TargetStatus[0];
+        if (!Shizuku.pingBinder()) return null;
+
+        // A chave de cada linha e o INDICE, nao o scriptName: o nome do script na
+        // cmdline do shell faria o pgrep abaixo casar com ele mesmo.
+        StringBuilder cmd = new StringBuilder();
+        for (int i = 0; i < targets.length; i++) {
+            Target t = targets[i];
+            // Mesma heuristica do pidOf(): `ps -A` primeiro, `pidof` como reserva.
+            cmd.append("p=$(ps -A | grep ' ").append(t.processName)
+               .append("' | awk '{print $2}' | head -1); ")
+               .append("[ -z \"$p\" ] && p=$(pidof ").append(t.processName)
+               .append(" | awk '{print $1}'); ")
+               .append("pgrep -f '").append(t.pgrepPattern())
+               .append("' >/dev/null 2>&1 && a=1 || a=0; ")
+               .append("echo \"").append(i).append(" ${p:--} $a\"; ");
+        }
+
+        ShizukuUtils.ShellResult r = ShizukuUtils.run(new String[]{"sh", "-c", cmd.toString()});
+        if (!r.ok()) {
+            Log.w(TAG, "[probe] falhou: " + r.describeFailure());
+            return null;
+        }
+
+        TargetStatus[] out = new TargetStatus[targets.length];
+        int filled = 0;
+        for (String line : r.stdout.split("\n")) {
+            String[] f = line.trim().split("\\s+");
+            if (f.length != 3) continue;
+            int idx;
+            try { idx = Integer.parseInt(f[0]); } catch (NumberFormatException e) { continue; }
+            if (idx < 0 || idx >= out.length || out[idx] != null) continue;
+            out[idx] = new TargetStatus("-".equals(f[1]) ? "" : f[1], "1".equals(f[2]));
+            filled++;
+        }
+        // Resposta parcial e tao perigosa quanto nenhuma: melhor nao decidir nada.
+        if (filled != out.length) {
+            Log.w(TAG, "[probe] saida incompleta (" + filled + "/" + out.length + "): " + r.stdout);
+            return null;
+        }
+        return out;
     }
 
     /** true assim que `pidof fridaserver` responde, ou false no timeout. */

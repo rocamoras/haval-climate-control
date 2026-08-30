@@ -29,8 +29,10 @@ import com.beantechs.intelligentvehiclecontrol.sdk.IListener;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -74,8 +76,18 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private static final String HVAC_PACKAGE_NAME    = "com.beantechs.hvac";
     private static final String WEATHER_PACKAGE_NAME = "com.beantechs.weatherservice";
-    private static final long   REAL_TEMP_WATCHDOG_MS = 10_000; // re-injeta o hook Frida se cair / SystemUI reiniciar
-    private static final long   HOME_CARD_WATCHDOG_MS = 10_000; // idem para a MediaCenter
+    // UM watchdog cobre os dois alvos Frida, e cada tick e UM shell (FridaUtils.probe).
+    // Antes eram dois watchdogs de 10s com 2 shells cada = 24 newProcess por minuto,
+    // para sempre. Cada newProcess deixa um RemoteProcessHolder no shizuku_server ate o
+    // proxy binder deste lado ser coletado; em 29/08/2026 isso estourou o heap de 96MB
+    // do server depois de 5h43 de sessao e derrubou o binder.
+    private static final long   WATCHDOG_MIN_MS       = 10_000;
+    // Enquanto nada muda o intervalo dobra ate aqui: num carro parado o SystemUI e a
+    // MediaCenter ficam horas sem reiniciar, e vigiar de 10 em 10s so gera fork. Teto
+    // em 30s e nao 60s de proposito: o que se paga aqui e a latencia para perceber um
+    // restart do SystemUI (ate 30s sem a temperatura real na barra / sem o card), e o
+    // fork economizado de 30s para 60s ja e irrelevante perto do corte de 24/min.
+    private static final long   WATCHDOG_MAX_MS       = 30_000;
     // Enquanto a primeira injecao nao pegou (MediaCenter ainda subindo no boot),
     // reintenta rapido: cada segundo aqui e um segundo de fileira do OEM na tela.
     private static final long   HOME_CARD_RETRY_MS    = 1_000;
@@ -179,17 +191,19 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private boolean  isHvacSuspended    = false;
     private Runnable resumeHvacRunnable = null;
 
-    // Temperatura Externa Real (UI) — injeção Frida no SystemUI + watchdog de 10s
+    // Temperatura Externa Real (UI) — injeção Frida no SystemUI
     private volatile boolean realTempEnabled = false;
     private String  injectedSystemUiPid      = "";
-    private final Runnable realTempWatchdogRunnable = this::realTempWatchdogTick;
 
-    // Card na Home (MediaCenter) — injeção Frida + watchdog de 10s
+    // Card na Home (MediaCenter) — injeção Frida
     private volatile boolean homeCardEnabled    = false;
     private volatile boolean homeCardBootstrapped = false;
     private volatile boolean homeCardInjected     = false;
     private String  injectedMediaCenterPid      = "";
-    private final Runnable homeCardWatchdogRunnable = this::homeCardWatchdogTick;
+
+    // Watchdog unico dos dois alvos Frida, com intervalo adaptativo.
+    private final Runnable injectionWatchdogRunnable = this::injectionWatchdogTick;
+    private long watchdogIntervalMs = WATCHDOG_MIN_MS;
     private final Runnable acOffCheckRunnable = this::evaluateClimateControl;
     // Instância única e estável para coalescência via removeCallbacks/postDelayed.
     // Mantida SEPARADA de acOffCheckRunnable para não cancelar o recheck de 62s do AC.
@@ -849,7 +863,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
      *  Roda no backgroundHandler. */
     private void applyRealOutsideTemp(boolean enabled) {
         realTempEnabled = enabled;
-        backgroundHandler.removeCallbacks(realTempWatchdogRunnable);
         if (enabled) {
             // Desativa o serviço nativo de previsão do tempo da central.
             ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "disable-user", "--user", "0", WEATHER_PACKAGE_NAME});
@@ -858,7 +871,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             String msg = FridaUtils.startAndInject();
             injectedSystemUiPid = FridaUtils.systemUiPid();
             Log.w(TAG, "[realtemp] ativado: " + msg + " (systemui pid=" + injectedSystemUiPid + ")");
-            backgroundHandler.postDelayed(realTempWatchdogRunnable, REAL_TEMP_WATCHDOG_MS);
         } else {
             // Para a injeção e reativa o serviço nativo de previsão do tempo.
             String msg = FridaUtils.stop();
@@ -866,26 +878,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "enable", WEATHER_PACKAGE_NAME});
             Log.w(TAG, "[realtemp] desativado: " + msg);
         }
-    }
-
-    /** Watchdog: a cada 10s re-injeta o hook se ele caiu ou o SystemUI reiniciou. */
-    private void realTempWatchdogTick() {
-        if (!realTempEnabled) return;
-        try {
-            String currentPid = FridaUtils.systemUiPid();
-            boolean systemUiRestarted = !currentPid.isEmpty() && !currentPid.equals(injectedSystemUiPid);
-            if (systemUiRestarted || !FridaUtils.isInjectionAlive()) {
-                Log.w(TAG, "[realtemp] watchdog re-injetando (restart=" + systemUiRestarted + ")");
-                FridaUtils.startAndInject();
-                injectedSystemUiPid = FridaUtils.systemUiPid();
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "[realtemp] watchdog erro: " + e.getMessage(), e);
-        } finally {
-            if (realTempEnabled) {
-                backgroundHandler.postDelayed(realTempWatchdogRunnable, REAL_TEMP_WATCHDOG_MS);
-            }
-        }
+        // O watchdog e compartilhado: reagenda no minimo (ou para, se ninguem mais quer).
+        rearmInjectionWatchdog(WATCHDOG_MIN_MS);
     }
 
     // ─────────────────────────────
@@ -923,7 +917,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
      *  Roda no backgroundHandler. */
     private void applyHomeCard(boolean enabled) {
         homeCardEnabled = enabled;
-        backgroundHandler.removeCallbacks(homeCardWatchdogRunnable);
         if (enabled) {
             String msg = FridaUtils.startHomeCard();
             injectedMediaCenterPid = FridaUtils.mediaCenterPid();
@@ -931,10 +924,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                     && FridaUtils.isHomeCardInjectionAlive();
             Log.w(TAG, "[homecard] ativado: " + msg + " (mediacenter pid="
                     + injectedMediaCenterPid + ", injetado=" + homeCardInjected + ")");
-            // Se a MediaCenter ainda nao subiu (pid vazio no boot), reintenta em 1s
-            // em vez de esperar o watchdog de 10s.
-            backgroundHandler.postDelayed(homeCardWatchdogRunnable,
-                    homeCardInjected ? HOME_CARD_WATCHDOG_MS : HOME_CARD_RETRY_MS);
         } else {
             // Grava "off" e só encerra o injetor depois que o script teve tempo de
             // restaurar a fileira — matá-lo antes congelaria a tela sem os ícones.
@@ -946,30 +935,90 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             }, HOME_CARD_RESTORE_MS);
             Log.w(TAG, "[homecard] desativado: " + msg);
         }
+        // Se a MediaCenter ainda nao subiu (pid vazio no boot), reintenta em 1s em vez
+        // de esperar o ciclo normal: cada segundo aqui e um segundo de fileira do OEM.
+        rearmInjectionWatchdog(homeCardEnabled && !homeCardInjected
+                ? HOME_CARD_RETRY_MS : WATCHDOG_MIN_MS);
     }
 
-    /** Watchdog: a cada 10s re-injeta se o injetor caiu ou a MediaCenter reiniciou. */
-    private void homeCardWatchdogTick() {
-        if (!homeCardEnabled) return;
+    // -----------------------------
+    // Watchdog unico das injecoes Frida
+    // -----------------------------
+
+    /**
+     * (Re)agenda o watchdog compartilhado, ou o encerra se nenhum alvo esta ligado.
+     * Sempre passar por aqui: agendar direto no handler deixaria dois ticks vivos.
+     */
+    private void rearmInjectionWatchdog(long delayMs) {
+        backgroundHandler.removeCallbacks(injectionWatchdogRunnable);
+        watchdogIntervalMs = delayMs;
+        if (!realTempEnabled && !homeCardEnabled) return;
+        backgroundHandler.postDelayed(injectionWatchdogRunnable, delayMs);
+    }
+
+    /**
+     * Re-injeta o que caiu, num unico shell para os dois alvos.
+     *
+     * O intervalo e adaptativo: dobra ate WATCHDOG_MAX_MS enquanto nada muda e volta a
+     * WATCHDOG_MIN_MS a cada re-injecao ou troca de pid. Numa sessao longa parada isso
+     * derruba a taxa de fork no shizuku_server de ~24/min para ~2/min — que e o ponto,
+     * ja que foi o acumulo desses forks que estourou o heap do server em 29/08/2026.
+     */
+    private void injectionWatchdogTick() {
+        if (!realTempEnabled && !homeCardEnabled) return;
+
+        long next = watchdogIntervalMs;
         try {
-            String currentPid = FridaUtils.mediaCenterPid();
-            boolean restarted = !currentPid.isEmpty() && !currentPid.equals(injectedMediaCenterPid);
-            if (restarted || !FridaUtils.isHomeCardInjectionAlive()) {
-                Log.w(TAG, "[homecard] watchdog re-injetando (restart=" + restarted + ")");
-                FridaUtils.startHomeCard();
-                injectedMediaCenterPid = FridaUtils.mediaCenterPid();
-                homeCardInjected = !injectedMediaCenterPid.isEmpty()
-                        && FridaUtils.isHomeCardInjectionAlive();
-            } else {
-                homeCardInjected = true;
+            List<FridaUtils.Target> want = new ArrayList<>(2);
+            if (realTempEnabled) want.add(FridaUtils.TARGET_SYSTEM_UI);
+            if (homeCardEnabled) want.add(FridaUtils.TARGET_MEDIA_CENTER);
+            FridaUtils.Target[] targets = want.toArray(new FridaUtils.Target[0]);
+
+            FridaUtils.TargetStatus[] status = FridaUtils.probe(targets);
+            if (status == null) {
+                // Estado desconhecido (o shell falhou). Re-injetar as cegas reiniciaria
+                // o fridaserver a toa e piscaria a tela — melhor so olhar de novo logo.
+                next = WATCHDOG_MIN_MS;
+                return;
             }
+
+            boolean changed = false;
+            for (int i = 0; i < targets.length; i++) {
+                FridaUtils.TargetStatus st = status[i];
+                if (targets[i] == FridaUtils.TARGET_SYSTEM_UI) {
+                    boolean restarted = !st.pid.isEmpty() && !st.pid.equals(injectedSystemUiPid);
+                    if (restarted || !st.injectorAlive) {
+                        Log.w(TAG, "[realtemp] watchdog re-injetando (restart=" + restarted + ")");
+                        FridaUtils.startAndInject();
+                        injectedSystemUiPid = FridaUtils.systemUiPid();
+                        changed = true;
+                    }
+                } else {
+                    boolean restarted = !st.pid.isEmpty() && !st.pid.equals(injectedMediaCenterPid);
+                    if (restarted || !st.injectorAlive) {
+                        Log.w(TAG, "[homecard] watchdog re-injetando (restart=" + restarted + ")");
+                        FridaUtils.startHomeCard();
+                        injectedMediaCenterPid = FridaUtils.mediaCenterPid();
+                        // Sem uma segunda ida ao shell so para confirmar: se a injecao
+                        // nao pegou, o proximo tick (em 1s) descobre e tenta de novo.
+                        homeCardInjected = !injectedMediaCenterPid.isEmpty();
+                        changed = true;
+                    } else {
+                        homeCardInjected = true;
+                    }
+                }
+            }
+
+            next = changed ? WATCHDOG_MIN_MS
+                           : Math.min(WATCHDOG_MAX_MS, watchdogIntervalMs * 2);
+            // MediaCenter ainda nao subiu: volta ao ritmo rapido do boot.
+            if (homeCardEnabled && !homeCardInjected) next = HOME_CARD_RETRY_MS;
+
         } catch (Exception e) {
-            Log.e(TAG, "[homecard] watchdog erro: " + e.getMessage(), e);
+            Log.e(TAG, "[watchdog] erro: " + e.getMessage(), e);
+            next = WATCHDOG_MIN_MS;
         } finally {
-            if (homeCardEnabled) {
-                backgroundHandler.postDelayed(homeCardWatchdogRunnable,
-                        homeCardInjected ? HOME_CARD_WATCHDOG_MS : HOME_CARD_RETRY_MS);
-            }
+            rearmInjectionWatchdog(next);
         }
     }
 
@@ -984,7 +1033,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     @Override
     public void onDestroy() {
-        backgroundHandler.removeCallbacks(realTempWatchdogRunnable);
+        backgroundHandler.removeCallbacks(injectionWatchdogRunnable);
         ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(null);
         if (handlerThread != null) handlerThread.quitSafely();
         isServiceRunning = false;

@@ -75,6 +75,18 @@ object LogUploader {
     private const val DROPBOX_MAX_CHARS_EACH = 20_000
     /** Acima desta prioridade a entrada só entra no resumo; ver [dropboxRank]. */
     private const val DROPBOX_OPEN_MAX_RANK = 4
+    /**
+     * Quantos horarios listar por tag no resumo, do mais novo para o mais antigo.
+     *
+     * Antes so saia o mais recente, e isso escondia justamente o que interessa numa
+     * cascata: em 28/08/2026 o app reiniciou tres vezes em dois minutos e do dropbox so
+     * dava para datar a ultima — as outras tiveram que ser deduzidas do "uptime do
+     * device" no log persistente. Com a lista da para cruzar direto. O teto existe
+     * porque o `system_app_wtf` do OEM sozinho tem 78 entradas.
+     */
+    private const val DROPBOX_MAX_STAMPS_PER_TAG = 12
+    /** Horarios por linha no resumo — 4 cabe em ~80 colunas. */
+    private const val DROPBOX_STAMPS_PER_LINE = 4
 
     /** Prefixos que valem a pena. O dropbox também guarda muita coisa irrelevante. */
     private val DROPBOX_INTERESTING = listOf(
@@ -192,6 +204,25 @@ object LogUploader {
             appendLine("arquivo de controle : ${shell(arrayOf("cat", FridaUtils.HOME_CARD_CTRL_PATH))}")
             appendLine()
 
+            // Instrumentacao do OOM de 29/08/2026: o shizuku_server morreu com
+            // OutOfMemoryError (heap de 96MB) depois de 5h43 de sessao, derrubando o
+            // binder. A hipotese e que cada newProcess() deixa la um RemoteProcessHolder
+            // ate o proxy binder deste lado ser coletado — ou seja, o consumo cresce com
+            // a TAXA de forks. Sem o contador e o RSS do server nao da para confirmar
+            // nem descartar, entao os dois vao no upload.
+            appendLine("----- consumo do servidor Shizuku -----")
+            val upMs = android.os.SystemClock.elapsedRealtime()
+            val forks = ShizukuUtils.newProcessCount()
+            appendLine("uptime do processo  : ${upMs / 1000}s")
+            appendLine("newProcess desde o start: $forks")
+            appendLine("taxa                : %.1f/min".format(
+                if (upMs > 0) forks * 60000.0 / upMs else 0.0))
+            appendLine("processos (RSS em kB):")
+            appendLine(shell(arrayOf("sh", "-c",
+                "ps -A -o PID,RSS,NAME | grep -iE 'shizuku|system_server' | grep -v grep"))
+                .ifBlank { "(nao encontrado)" })
+            appendLine()
+
             appendLine("----- historico de acoes (${state.actionLog.size}) -----")
             if (state.actionLog.isEmpty()) appendLine("(vazio)")
             else state.actionLog.forEach { appendLine(it) }
@@ -289,14 +320,21 @@ object LogUploader {
 
         return buildString {
             appendLine("${all.size} entradas no total, ${hits.size} de interesse:")
-            // Resumo por tipo — 120 wtf do OEM viram uma linha em vez de 40 linhas
-            // de listagem que não dizem nada.
+            // Resumo por tipo, com os horarios de cada um: 78 wtf do OEM viram um
+            // cabecalho + 3 linhas de horario em vez de 78 linhas de nome de arquivo,
+            // e ainda da para cruzar uma cascata de reinicios com o log persistente.
             hits.groupBy { it.substringBefore('@') }
                 .entries
                 .sortedWith(compareBy({ dropboxRank(it.key) }, { -it.value.size }))
                 .forEach { (tag, list) ->
-                    appendLine("  ${list.size}x $tag " +
-                            "(mais recente: ${stampToText(list.maxOf { dropboxStamp(it) })})")
+                    appendLine("  ${list.size}x $tag")
+                    val stamps = list.map { dropboxStamp(it) }.sortedDescending()
+                    stamps.take(DROPBOX_MAX_STAMPS_PER_TAG)
+                        .map { stampToText(it) }
+                        .chunked(DROPBOX_STAMPS_PER_LINE)
+                        .forEach { appendLine("      " + it.joinToString("  ")) }
+                    val hidden = stamps.size - DROPBOX_MAX_STAMPS_PER_TAG
+                    if (hidden > 0) appendLine("      (+$hidden mais antigas)")
                 }
 
             if (toOpen.isEmpty()) {

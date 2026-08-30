@@ -23,6 +23,7 @@ public class IPTablesUtils {
         IRemoteProcess checkProc = null;
         IRemoteProcess insertProc = null;
         try {
+            ShizukuUtils.countNewProcess();
             checkProc = shizukuService.newProcess(new String[]{"iptables", "-C", "OUTPUT", "-j", "ACCEPT"}, null, null);
             if (checkProc == null) throw new Exception("Failed to create process for OUTPUT check");
             checkProc.waitFor();
@@ -30,6 +31,7 @@ public class IPTablesUtils {
             closeStreams(checkProc);
             if (checkExit == 0) return true;
 
+            ShizukuUtils.countNewProcess();
             insertProc = shizukuService.newProcess(new String[]{"iptables", "-I", "OUTPUT", "1", "-j", "ACCEPT"}, null, null);
             if (insertProc == null) throw new Exception("Failed to create process for OUTPUT insert");
             insertProc.waitFor();
@@ -50,6 +52,7 @@ public class IPTablesUtils {
         IRemoteProcess checkProc = null;
         IRemoteProcess insertProc = null;
         try {
+            ShizukuUtils.countNewProcess();
             checkProc = shizukuService.newProcess(new String[]{"iptables", "-C", "INPUT", "-j", "ACCEPT"}, null, null);
             if (checkProc == null) throw new Exception("Failed to create process for INPUT check");
             checkProc.waitFor();
@@ -57,6 +60,7 @@ public class IPTablesUtils {
             closeStreams(checkProc);
             if (checkExit == 0) return true;
 
+            ShizukuUtils.countNewProcess();
             insertProc = shizukuService.newProcess(new String[]{"iptables", "-I", "INPUT", "1", "-j", "ACCEPT"}, null, null);
             if (insertProc == null) throw new Exception("Failed to create process for INPUT insert");
             insertProc.waitFor();

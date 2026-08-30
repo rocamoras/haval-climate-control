@@ -4,8 +4,8 @@ import android.os.ParcelFileDescriptor;
 import android.util.Log;
 
 import java.io.BufferedReader;
-import java.io.FileInputStream;
 import java.io.InputStreamReader;
+import java.util.concurrent.atomic.AtomicLong;
 
 import moe.shizuku.server.IRemoteProcess;
 import moe.shizuku.server.IShizukuService;
@@ -14,6 +14,27 @@ import rikka.shizuku.Shizuku;
 public class ShizukuUtils {
 
     private static final String TAG = "ShizukuUtils";
+
+    /**
+     * Quantos newProcess() ja passamos pelo shizuku_server desde que o processo subiu.
+     *
+     * Vai para o log de diagnostico: cada um deixa no server um RemoteProcessHolder +
+     * um java.lang.Process + 3 pipes, liberados so quando o proxy binder deste lado e
+     * coletado. Em 29/08/2026 o server morreu de OutOfMemoryError depois de 5h43 de
+     * sessao; a conta (~9.000 forks para 96MB) so fecha se a taxa for medida, entao
+     * aqui esta o contador.
+     */
+    private static final AtomicLong NEW_PROCESS_COUNT = new AtomicLong();
+
+    /** Chamado por quem invoca newProcess() fora daqui (ex.: IPTablesUtils). */
+    public static void countNewProcess() {
+        NEW_PROCESS_COUNT.incrementAndGet();
+    }
+
+    /** Total de newProcess() desde o start do processo. */
+    public static long newProcessCount() {
+        return NEW_PROCESS_COUNT.get();
+    }
 
     /**
      * Resultado completo de um comando: exit code, stdout, stderr e a exceção que
@@ -85,6 +106,7 @@ public class ShizukuUtils {
         IShizukuService shizukuService = IShizukuService.Stub.asInterface(Shizuku.getBinder());
         IRemoteProcess process = null;
         try {
+            NEW_PROCESS_COUNT.incrementAndGet();
             process = shizukuService.newProcess(command, null, null);
             if (process == null) {
                 throw new Exception("newProcess devolveu null");
@@ -135,8 +157,12 @@ public class ShizukuUtils {
 
     private static void drain(ParcelFileDescriptor pfd, StringBuilder sink) {
         if (pfd == null) return;
+        // AutoCloseInputStream, nao FileInputStream(pfd.getFileDescriptor()): o segundo
+        // fecha o fd cru e deixa o ParcelFileDescriptor achando que continua aberto —
+        // o CloseGuard reclama e o fd so e devolvido no finalize. Assim o PFD fecha
+        // junto com o reader, como o IPTablesUtils ja fazia com closeStreams().
         try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(new FileInputStream(pfd.getFileDescriptor())))) {
+                new InputStreamReader(new ParcelFileDescriptor.AutoCloseInputStream(pfd)))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 synchronized (sink) {
