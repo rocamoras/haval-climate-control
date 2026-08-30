@@ -538,11 +538,25 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 ) { i -> state.sendCommand(CarProps.COMFORT_CURVE, i.toString()) }
             }
 
-            PropRow("Limite de\nbateria baixa", state.settingLimitEnable, CarProps.LIMIT_ENABLE)
+            // O mock do v3 tinha DUAS linhas de bateria (choice_low_battery e
+            // choice_low_limit). No APK OEM so a primeira tem listener: a segunda e um
+            // display do limiar (mLowLimitValue), e nao existe propriedade que o
+            // carregue — por isso ficou de fora em vez de virar controle morto.
+            PropRow("Restrição por\nbateria baixa", state.settingLimitEnable, CarProps.LIMIT_ENABLE)
+            Text(
+                "Com a bateria muito baixa, o ar-condicionado é desligado e bloqueado.",
+                fontSize = 18.sp, color = OemInk3,
+                modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
+            )
 
             // O botão "AC Inteligente" da tela principal hospeda o controle automático do
-            // APP. A propriedade homônima do OEM ganhou casa aqui — é o único lugar onde
-            // ela é escrita.
+            // APP, então a propriedade homônima do OEM ganhou casa aqui — é o único lugar
+            // onde ela é escrita.
+            //
+            // Ressalva: esta linha é adição nossa. O SettingViewModel do OEM nao inclui
+            // Intelligent_switch_enable entre as suas 8 chaves, e o choice_acintelligent
+            // do layout nao recebe listener — ou seja, nesta variante o proprio OEM nunca
+            // escreve essa propriedade. Se o carro recusar a escrita, e por isso.
             PropRow("A/C inteligente (OEM)", state.intelligentSwitch, CarProps.INTELLIGENT_SWITCH)
 
             // ── app ───────────────────────────────────────────────────────────

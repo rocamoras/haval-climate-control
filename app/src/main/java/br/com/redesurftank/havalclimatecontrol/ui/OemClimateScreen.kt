@@ -32,23 +32,32 @@ private const val FRAME_W    = 1732
 private const val FRAME_H    = 628
 
 /**
- * Distribuição de ar (car.hvac.blower_mode).
+ * Distribuição de ar (car.hvac.blower_mode) — tratada como BITMASK de saídas.
  *
- * ATENÇÃO: a codificação numérica ainda NÃO foi confirmada no carro — o catálogo do
- * app-tool traz a chave, não os valores. A ordem abaixo é a da fileira do OEM, que é o
- * palpite mais provável. Para conferir no carro: mexa na fileira pelo app OEM e mande
- * o log pelo botão "Enviar log" das Configurações — o valor lido aparece lá.
+ * Evidência: MainViewModel.windClick do com.beantechs.hvac compara o parâmetro com 15
+ * (0b1111) antes de chamar setBlower, e os próprios nomes do OEM são combinações
+ * (hvac_face_foot = rosto + pés). Daí rosto=1, pés=2, desembaçador=4.
+ *
+ * Os valores em si ainda NÃO foram lidos do carro: os literais de cada ícone vivem no
+ * onClick do layout, que é AXML binário. Para confirmar, mexa na fileira pelo app OEM e
+ * mande o log pelo botão "Enviar log" das Configurações.
  */
 private val BLOWER_MODES = listOf(
-    "1" to R.drawable.hvac_face_on,
-    "2" to R.drawable.hvac_face_foot_off,
-    "3" to R.drawable.hvac_foot_off,
-    "4" to R.drawable.hvac_defrost_foot_off,
+    "1" to R.drawable.hvac_face_on,          // rosto
+    "3" to R.drawable.hvac_face_foot_off,    // rosto + pés
+    "2" to R.drawable.hvac_foot_off,         // pés
+    "6" to R.drawable.hvac_defrost_foot_off, // pés + desembaçador
 )
 
-/** Recirculação (car.hvac.cycle_mode). Mesma ressalva do blower_mode. */
+/**
+ * Recirculação × ar externo (car.hvac.cycle_mode).
+ *
+ * NÃO é 0/1: o MainViewModel.exchangeClick do OEM compara com 1 e alterna entre 2 e 0,
+ * ou seja, o eixo trabalha com 1 e 2. Confirmado até aí; qual dos dois é recirculação
+ * ainda depende de teste no carro.
+ */
 private const val CYCLE_RECIRC = "1"
-private const val CYCLE_FRESH  = "0"
+private const val CYCLE_FRESH  = "2"
 
 // ─────────────────────────────────────────────────────────────
 // PM2.5 — enumeradores extraídos do com.beantechs.hvac

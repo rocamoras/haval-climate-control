@@ -38,7 +38,12 @@ public final class CarProps {
 
     // ── HVAC · ar ─────────────────────────────────────────────────────────────
     public static final String FAN_SPEED       = "car.hvac.fan_speed";
-    /** Teto da seekbar do ventilador. O OEM não garante 7 — lê daqui. */
+    /**
+     * Teto da seekbar do ventilador. O HVAC OEM NAO le esta propriedade (ele usa
+     * fanUp/fanDown sobre fan_speed_action), entao ela pode nunca chegar — a tela cai
+     * no fallback de 7. Mantida porque o catalogo do app-tool a lista e, se o servico
+     * a publicar, e melhor que o numero fixo.
+     */
     public static final String FAN_SPEED_RANGE = "car.hvac.fan_speed_range";
     /** Distribuição de ar: rosto / rosto+pés / pés / pés+desembaçador. */
     public static final String BLOWER_MODE     = "car.hvac.blower_mode";
@@ -57,10 +62,15 @@ public final class CarProps {
     public static final String LIMIT_ENABLE    = "car.hvac.setting.limit_enable";
     public static final String AUTO_DEFROST    = "car.hvac.setting.auto_defrost_enable";
 
-    // ── fragrância (mora em car.basic, não em car.hvac) ───────────────────────
-    public static final String FRAGRANCE_STATUS        = "car.basic.fragrance_status";
-    public static final String FRAGRANCE_CONCENTRATION = "car.basic.fragrance_concentration";
-    public static final String FRAGRANCE_TYPE          = "car.basic.fragrance_type";
+    // ── fragrância ────────────────────────────────────────────────────────────
+    // Namespace proprio: car.fragrance.*, NAO car.basic.fragrance_* (que existe no
+    // catalogo do app-tool mas o HVAC OEM nunca le). Confirmado no
+    // HVACVehicleControlManager: getFragranceSwitchPower/setFragrancePower/setFragranceType.
+    public static final String FRAGRANCE_STATUS        = "car.fragrance.status";
+    /** Nivel 0..3. E o que o botao "Fragrancia" do OEM escreve (setFragrancePower). */
+    public static final String FRAGRANCE_CONCENTRATION = "car.fragrance.concentration_status";
+    /** Frasco selecionado (setFragranceType). */
+    public static final String FRAGRANCE_TYPE          = "car.fragrance.cur_channel_type";
 
     // ── bancos ────────────────────────────────────────────────────────────────
     public static final String DRIVER_SEAT_VENT    = "car.comfort_setting.driver_seat_ventilation_level";
