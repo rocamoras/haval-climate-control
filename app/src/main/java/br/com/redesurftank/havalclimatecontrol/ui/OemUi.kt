@@ -233,3 +233,111 @@ fun OemFanSeek(
         )
     }
 }
+
+// ─────────────────────────────────────────────────────────────
+// Configurações — geometria do bg_setting do OEM
+// ─────────────────────────────────────────────────────────────
+
+/** Cabeçalho com seta de voltar (.sback: left 50, top 32, altura 88). */
+@Composable
+fun OemBackHeader(title: String, onBack: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+            .absoluteOffset(50.dp, 32.dp)
+            .height(88.dp)
+            .pointerInput(Unit) { detectTapGestures(onTap = { onBack() }) },
+    ) {
+        Canvas(Modifier.size(44.dp)) {
+            val w = size.width
+            // Chevron do OEM: viewBox 0 0 90 90, path "M52 26 33 45l19 19".
+            val k = w / 90f
+            val stroke = androidx.compose.ui.graphics.drawscope.Stroke(
+                width = 4f * k,
+                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                join = androidx.compose.ui.graphics.StrokeJoin.Round,
+            )
+            val path = androidx.compose.ui.graphics.Path().apply {
+                moveTo(52f * k, 26f * k); lineTo(33f * k, 45f * k); lineTo(52f * k, 64f * k)
+            }
+            drawPath(path, OemInk, style = stroke)
+        }
+        Text(title, fontSize = 32.sp, fontWeight = FontWeight.Normal, color = OemInk)
+    }
+}
+
+/** Título de seção. Não existe no OEM — entrou para separar o que é do carro do que é
+ *  do app, que é a distinção que mais confunde nesta tela. */
+@Composable
+fun OemSectionTitle(text: String) {
+    Text(
+        text.uppercase(),
+        fontSize = 12.sp, fontWeight = FontWeight.Medium, letterSpacing = 2.4.sp,
+        color = OemInk4,
+        modifier = Modifier.padding(top = 26.dp, bottom = 10.dp),
+    )
+}
+
+/** Controle segmentado do OEM (.seg / .seg-item), 64dp de altura. */
+@Composable
+fun OemSeg(options: List<String>, selected: Int, width: Dp, onSelect: (Int) -> Unit) {
+    Row(modifier = Modifier.width(width).height(64.dp)) {
+        options.forEachIndexed { i, label ->
+            val on = i == selected
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (on) OemAccent.copy(alpha = 0.20f) else Color.Transparent)
+                    .pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) },
+            ) {
+                Text(
+                    label, fontSize = 32.sp,
+                    color = if (on) OemAccent else OemInk2,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+/** Linha rótulo + controle (.srow: rótulo de 400dp, gap 40). */
+@Composable
+fun OemRow(label: String, minHeight: Dp = 96.dp, content: @Composable () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(40.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(min = minHeight),
+    ) {
+        Text(label, fontSize = 28.sp, color = OemInk, modifier = Modifier.width(400.dp))
+        content()
+    }
+}
+
+/** Aviso/erro sob uma linha. Amarelo é ressalva, vermelho é "não vai funcionar". */
+@Composable
+fun OemNote(text: String, severe: Boolean = false) {
+    Text(
+        text, fontSize = 18.sp, lineHeight = 24.sp,
+        color = if (severe) Color(0xFFFF7043) else Color(0xFFFFB74D),
+        modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
+    )
+}
+
+/** Botão de ação (atualizar, enviar log) no estilo dos segmentos. */
+@Composable
+fun OemButton(label: String, enabled: Boolean = true, width: Dp = 400.dp, onClick: () -> Unit) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .width(width).height(64.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(if (enabled) OemAccent.copy(alpha = 0.20f) else Color(0x14FFFFFF))
+            .pointerInput(enabled) { if (enabled) detectTapGestures(onTap = { onClick() }) },
+    ) {
+        Text(label, fontSize = 28.sp, color = if (enabled) OemAccent else OemInk3)
+    }
+}

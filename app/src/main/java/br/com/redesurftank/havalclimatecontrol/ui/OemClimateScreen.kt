@@ -36,8 +36,8 @@ private const val FRAME_H    = 628
  *
  * ATENÇÃO: a codificação numérica ainda NÃO foi confirmada no carro — o catálogo do
  * app-tool traz a chave, não os valores. A ordem abaixo é a da fileira do OEM, que é o
- * palpite mais provável. Toda leitura desconhecida vai para o log persistente
- * (ver [logUnknownEnum]) para poder ser conferida com o botão "Enviar log".
+ * palpite mais provável. Para conferir no carro: mexa na fileira pelo app OEM e mande
+ * o log pelo botão "Enviar log" das Configurações — o valor lido aparece lá.
  */
 private val BLOWER_MODES = listOf(
     "1" to R.drawable.hvac_face_on,
@@ -49,6 +49,36 @@ private val BLOWER_MODES = listOf(
 /** Recirculação (car.hvac.cycle_mode). Mesma ressalva do blower_mode. */
 private const val CYCLE_RECIRC = "1"
 private const val CYCLE_FRESH  = "0"
+
+// ─────────────────────────────────────────────────────────────
+// PM2.5 — enumeradores extraídos do com.beantechs.hvac
+//
+// HVACValue.EXCHANGE e HVACValue.QUALITY_DESCRIBE. São os breakpoints de PM2.5 do
+// AQI chinês (GB 3095-2012 / HJ 633-2012), por isso "Bom" só começa abaixo de 75.
+// ─────────────────────────────────────────────────────────────
+private val PM25_EXCHANGE = intArrayOf(250, 150, 115, 75, 35, -1)
+private val PM25_LABELS   = arrayOf(
+    "Poluição séria", "Poluição pesada", "Poluição média",
+    "Poluição leve",  "Bom",             "Excelente"
+)
+private val PM25_COLORS   = arrayOf(
+    Color(0xFFFF5252), Color(0xFFFF7043), Color(0xFFFFA726),
+    Color(0xFFFFD54F), Color(0xFF9CCC65), Color(0xFF4CAF50)
+)
+
+/**
+ * Reproduz MainFragment.bindLiveData$lambda-36 do app OEM: procura o PRIMEIRO índice
+ * i em que `valor > EXCHANGE[i]`. Como o último elemento é -1, um valor de -1 (o
+ * default de getPM() quando o fetch volta vazio) não casa com nenhuma faixa — é o
+ * caminho de "sem dado", em que o OEM simplesmente não escreve nada na tela.
+ *
+ * @return índice 0..5, ou -1 para sem dado / valor não numérico.
+ */
+private fun pm25BandIndex(raw: String): Int {
+    val v = raw.toIntOrNull() ?: return -1
+    for (i in PM25_EXCHANGE.indices) if (v > PM25_EXCHANGE[i]) return i
+    return -1
+}
 
 private fun ClimateStateHolder.isOn(v: String) = v == "1"
 
@@ -274,7 +304,18 @@ private fun ReadoutColumn(cabin: String, outside: String, pm25: String, modifier
         Value("${deg(cabin)}  /  ${deg(outside)}")
         Spacer(Modifier.height(6.dp))
         Label("PM2.5")
-        Value(if (pm25 == "--" || pm25.toIntOrNull()?.let { it < 0 } == true) "--" else "$pm25 µg/m³")
+        val band = pm25BandIndex(pm25)
+        if (band < 0) {
+            Value("--")
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    PM25_LABELS[band], fontSize = 22.sp, fontWeight = FontWeight.Light,
+                    color = PM25_COLORS[band],
+                )
+                Value("$pm25 µg/m³")
+            }
+        }
     }
 }
 

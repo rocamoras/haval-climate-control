@@ -11,15 +11,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,22 +25,30 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.RoundRect
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import br.com.redesurftank.havalclimatecontrol.ui.OemAccent
+import br.com.redesurftank.havalclimatecontrol.ui.OemBackHeader
+import br.com.redesurftank.havalclimatecontrol.ui.OemButton
 import br.com.redesurftank.havalclimatecontrol.ui.OemClimateScreen
+import br.com.redesurftank.havalclimatecontrol.ui.OemInk
+import br.com.redesurftank.havalclimatecontrol.ui.OemInk2
+import br.com.redesurftank.havalclimatecontrol.ui.OemInk3
+import br.com.redesurftank.havalclimatecontrol.ui.OemNote
+import br.com.redesurftank.havalclimatecontrol.ui.OemRow
+import br.com.redesurftank.havalclimatecontrol.ui.OemSectionTitle
+import br.com.redesurftank.havalclimatecontrol.ui.OemSeg
 import br.com.redesurftank.havalclimatecontrol.ui.theme.HavalClimateControlTheme
 import br.com.redesurftank.havalclimatecontrol.services.ClimateControlService
 import br.com.redesurftank.havalclimatecontrol.utils.FridaUtils
@@ -95,62 +98,18 @@ private const val KEY_START_SHIZUKU        = "start_shizuku_server"
 // HMI color tokens — monochromatic dark, accent only for active
 // ─────────────────────────────────────────────────────────────
 private val HmiBg         = Color(0xFF000000)
-private val HmiSurface    = Color(0xFF141414)
-private val HmiSurface2   = Color(0xFF1C1C1C)
 private val HmiFg         = Color(0xFFFAFAFA)
 private val HmiFgMuted    = Color(0xFFA3A3A3)
-private val HmiAccent     = Color(0xFF22C55E)
-private val HmiBorder     = Color(0x12FFFFFF)
-private val HmiBorderStr  = Color(0x1FFFFFFF)
 
 // ─────────────────────────────────────────────────────────────
 // Constantes reutilizáveis — evitam realocação por recomposição/frame
 // ─────────────────────────────────────────────────────────────
-private val airflowDashInterval = floatArrayOf(12f, 16f)
 
-// ─────────────────────────────────────────────────────────────
-// PM2.5 — enumeradores extraídos do com.beantechs.hvac
-//
-// HVACValue.EXCHANGE e HVACValue.QUALITY_DESCRIBE. São os breakpoints de PM2.5 do
-// AQI chinês (GB 3095-2012 / HJ 633-2012), por isso "Bom" só começa abaixo de 75.
-// ─────────────────────────────────────────────────────────────
-private val PM25_EXCHANGE = intArrayOf(250, 150, 115, 75, 35, -1)
-private val PM25_LABELS   = arrayOf(
-    "Poluição séria", "Poluição pesada", "Poluição média",
-    "Poluição leve",  "Bom",             "Excelente"
-)
-private val PM25_RANGES   = arrayOf("> 250", "151–250", "116–150", "76–115", "36–75", "0–35")
-private val PM25_COLORS   = arrayOf(
-    Color(0xFFFF5252), Color(0xFFFF7043), Color(0xFFFFA726),
-    Color(0xFFFFD54F), Color(0xFF9CCC65), Color(0xFF4CAF50)
-)
-
-/**
- * Reproduz MainFragment.bindLiveData$lambda-36 do app OEM: procura o PRIMEIRO índice
- * i em que `valor > EXCHANGE[i]`. Como o último elemento é -1, um valor de -1 (o
- * default de getPM() quando o fetch volta vazio) não casa com nenhuma faixa — é o
- * caminho de "sem dado", em que o OEM simplesmente não escreve nada na tela.
- *
- * @return índice 0..5, ou -1 para sem dado / valor não numérico.
- */
-private fun pm25BandIndex(raw: String): Int {
-    val v = raw.toIntOrNull() ?: return -1
-    for (i in PM25_EXCHANGE.indices) if (v > PM25_EXCHANGE[i]) return i
-    return -1
-}
 
 // ─────────────────────────────────────────────────────────────
 // System properties de configuração de variante (persist.vendor.gwm.cfg.*)
 // ─────────────────────────────────────────────────────────────
 
-/** Gate de HVACSystemPropertiesUtil.hasAutoDemist(): mostra a linha
- *  "Desembaçador dianteiro automático" nas Configurações do HVAC quando == 1. */
-private const val PROP_AUTO_DEMIST = "persist.vendor.gwm.cfg.indoor.automatic.demisting"
-
-/** Gate de hasAirPMSystem(): o HVAC só exibe a qualidade do ar quando ∈ {2,3,5}. */
-private const val PROP_AIR_PURIFIER = "persist.vendor.gwm.cfg.air.purifier"
-
-private const val HVAC_PKG = "com.beantechs.hvac"
 
 private val pm25TimeFmt = SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
 
@@ -176,11 +135,9 @@ fun AppRoot() {
     var currentScreen by remember { mutableStateOf("main") }
     when (currentScreen) {
         "main"       -> MainControlScreen(
-                            onNavigateToDebug      = { currentScreen = "debug" },
                             onNavigateToScreenInfo = { currentScreen = "screeninfo" },
                             onNavigateToSettings   = { currentScreen = "settings" }
                         )
-        "debug"      -> DebugScreen(onNavigateBack = { currentScreen = "main" })
         "screeninfo" -> ScreenInfoScreen(onNavigateBack = { currentScreen = "main" })
         "settings"   -> SettingsScreen(onNavigateBack = { currentScreen = "main" })
     }
@@ -192,7 +149,6 @@ fun AppRoot() {
 
 @Composable
 fun MainControlScreen(
-    onNavigateToDebug: () -> Unit,
     onNavigateToScreenInfo: () -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
@@ -374,402 +330,6 @@ fun MainControlScreen(
 // Debug Screen
 // ─────────────────────────────────────────────────────────────
 
-@Composable
-fun DebugScreen(onNavigateBack: () -> Unit) {
-    val context = LocalContext.current
-    val scope   = rememberCoroutineScope()
-    val state   = ClimateStateHolder
-
-    var currentVersion   by remember { mutableStateOf("--") }
-    var isChecking       by remember { mutableStateOf(false) }
-    var isDownloading    by remember { mutableStateOf(false) }
-    var downloadProgress by remember { mutableFloatStateOf(0f) }
-    var updateAvailable  by remember { mutableStateOf(false) }
-    var latestVersion    by remember { mutableStateOf("") }
-    var downloadUrl      by remember { mutableStateOf("") }
-    var updateMessage    by remember { mutableStateOf("") }
-    var showMsgDialog    by remember { mutableStateOf(false) }
-    var showPermDialog   by remember { mutableStateOf(false) }
-    var downloadJob      by remember { mutableStateOf<Job?>(null) }
-
-    // Upload do log para o Firebase Storage
-    var isUploading   by remember { mutableStateOf(false) }
-    var uploadStatus  by remember { mutableStateOf("") }
-    var uploadUrl     by remember { mutableStateOf("") }
-    var showUploadDlg by remember { mutableStateOf(false) }
-
-    val permLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { }
-
-    LaunchedEffect(Unit) {
-        try {
-            currentVersion = context.packageManager
-                .getPackageInfo(context.packageName, 0).versionName ?: "--"
-        } catch (_: PackageManager.NameNotFoundException) {}
-    }
-
-    fun uploadLog() {
-        isUploading   = true
-        uploadUrl     = ""
-        uploadStatus  = "Iniciando…"
-        showUploadDlg = true
-        scope.launch(Dispatchers.IO) {
-            val result = LogUploader.collectAndUpload(context) { msg ->
-                scope.launch(Dispatchers.Main) { uploadStatus = msg }
-            }
-            withContext(Dispatchers.Main) {
-                isUploading = false
-                when (result) {
-                    is LogUploader.Result.Ok -> {
-                        uploadUrl    = result.url
-                        uploadStatus = "Enviado (${result.sizeBytes / 1024} KB)"
-                        state.addLog("[${pm25TimeFmt.format(java.util.Date())}] log enviado ao Firebase")
-                    }
-                    is LogUploader.Result.Err -> {
-                        uploadStatus = "Erro: ${result.message}"
-                    }
-                }
-            }
-        }
-    }
-
-    fun installApk(file: File) {
-        if (!context.packageManager.canRequestPackageInstalls()) {
-            showPermDialog = true; return
-        }
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-        context.startActivity(Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        })
-    }
-
-    fun startDownload() {
-        isDownloading = true; downloadProgress = 0f
-        downloadJob = scope.launch(Dispatchers.IO) {
-            try {
-                val file  = File(context.getExternalFilesDir(null), "update.apk")
-                val conn  = URL(downloadUrl).openConnection() as HttpURLConnection
-                val total = conn.contentLength
-                val buf   = ByteArray(4096)
-                var bytes = 0; var read: Int
-                FileOutputStream(file).use { out ->
-                    BufferedInputStream(conn.inputStream).use { inp ->
-                        while (inp.read(buf).also { read = it } != -1) {
-                            out.write(buf, 0, read); bytes += read
-                            if (total > 0) downloadProgress = bytes.toFloat() / total
-                        }
-                    }
-                }
-                withContext(Dispatchers.Main) {
-                    isDownloading = false; updateAvailable = false; installApk(file)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Download failed", e)
-                withContext(Dispatchers.Main) {
-                    isDownloading = false
-                    updateMessage = "Erro no download: ${e.message}"
-                    showMsgDialog = true
-                }
-            }
-        }
-    }
-
-    fun checkForUpdates() {
-        isChecking = true
-        scope.launch(Dispatchers.IO) {
-            try {
-                val rel = fetchNewerRelease(currentVersion)
-                withContext(Dispatchers.Main) {
-                    isChecking = false
-                    if (rel != null) {
-                        latestVersion = rel.tag; downloadUrl = rel.apkUrl; updateAvailable = true
-                    } else {
-                        updateMessage = "Você já está na versão mais recente ($currentVersion)"
-                        showMsgDialog = true
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Update check failed", e)
-                withContext(Dispatchers.Main) {
-                    isChecking = false
-                    updateMessage = "Erro ao verificar atualizações: ${e.message}"
-                    showMsgDialog = true
-                }
-            }
-        }
-    }
-
-    val isAuto    = state.autoEnable == "1"
-    val isAcOn    = state.powerMode  == "1"
-    val acColor   = if (isAcOn)  Color(0xFF00BCD4) else Color(0xFF757575)
-    val autoColor = if (isAuto) Color(0xFF4CAF50)  else Color(0xFFFF5722)
-
-    Column(modifier = Modifier.fillMaxSize().background(HmiBg).padding(16.dp)) {
-
-        Row(
-            modifier              = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment     = Alignment.CenterVertically
-        ) {
-            Row(
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                IconButton(onClick = onNavigateBack, modifier = Modifier.size(36.dp)) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Voltar",
-                        tint               = HmiFg,
-                        modifier           = Modifier.size(20.dp)
-                    )
-                }
-                Column {
-                    Text("Debug", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = HmiFg)
-                    Text("v$currentVersion", fontSize = 17.sp, color = Color(0xFF666666))
-                }
-            }
-            Row(
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick        = { checkForUpdates() },
-                    enabled        = !isChecking && !isDownloading,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    colors         = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0)),
-                    shape          = RoundedCornerShape(8.dp)
-                ) {
-                    if (isChecking) {
-                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = HmiFg, strokeWidth = 2.dp)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Verificando...", fontSize = 15.sp)
-                    } else {
-                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Atualizar", fontSize = 15.sp)
-                    }
-                }
-                Button(
-                    onClick        = { uploadLog() },
-                    enabled        = !isUploading,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    colors         = ButtonDefaults.buttonColors(containerColor = Color(0xFF6A1B9A)),
-                    shape          = RoundedCornerShape(8.dp)
-                ) {
-                    if (isUploading) {
-                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = HmiFg, strokeWidth = 2.dp)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Enviando…", fontSize = 15.sp)
-                    } else {
-                        Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Enviar log", fontSize = 15.sp)
-                    }
-                }
-                StatusDot(connected = state.vehicleConnected)
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TempCard(Modifier.weight(1f), "Temperatura Interna", formatTemp(state.insideTemp), Color(0xFFFFB74D))
-            TempCard(Modifier.weight(1f), "Temperatura Setada",  formatTemp(state.driverTemp),  Color(0xFF64B5F6))
-            StatusCard(Modifier.weight(1f), "Modo AC",
-                if (state.autoEnable == "--") "--" else if (isAuto) "Automático" else "Manual", autoColor)
-            StatusCard(Modifier.weight(1f), "Estado AC",
-                if (state.powerMode == "--") "--" else if (isAcOn) "Ligado" else "Desligado", acColor)
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Text("Controles HVAC", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
-        Spacer(Modifier.height(6.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            HvacToggle("power_mode",     state.powerMode,          "car.hvac.power_mode")
-            HvacToggle("ac_enable",      state.acEnable,           "car.hvac.ac_enable")
-            HvacToggle("front_defrost",  state.frontDefrostEnable, "car.hvac.front_defrost_enable")
-            HvacToggle("heating_enable", state.heatingEnable,      "car.hvac.heating_enable")
-            HvacToggle("intelligent_sw", state.intelligentSwitch,  "car.hvac.Intelligent_switch_enable")
-            HvacToggle("limit_enable",   state.settingLimitEnable, "car.hvac.setting.limit_enable")
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        Text("Controles EV", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
-        Spacer(Modifier.height(6.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            HvacToggle("wade_mode", state.wadeModeEnable, "car.ev.setting.wade_mode_enable")
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        Text("Sensores HVAC", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
-        Spacer(Modifier.height(6.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            HvacReadOnly(Modifier.weight(1f), "front_temp_range",  state.frontTempRange)
-            HvacReadOnly(Modifier.weight(1f), "intelligent_range", state.intelligentTempRange)
-            HvacReadOnly(Modifier.weight(1f), "comfort_curve",     state.comfortCurve)
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        // A tela é 1792×660 — larga e baixa. Em vez de empilhar mais seções (que
-        // forçariam scroll vertical), o rodapé vira três colunas lado a lado.
-        Row(
-            modifier              = Modifier.fillMaxWidth().weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Column(modifier = Modifier.weight(1.1f).fillMaxHeight()) {
-                Text("Histórico de Ações", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
-                Spacer(Modifier.height(6.dp))
-                if (state.actionLog.isEmpty()) {
-                    Box(
-                        modifier         = Modifier.fillMaxWidth().weight(1f)
-                            .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text      = if (state.vehicleConnected)
-                                "Nenhuma ação registrada ainda.\nAC será controlado quando o modo Automático estiver ativo."
-                            else "Aguardando conexão com o veículo...",
-                            color     = Color(0xFF666666),
-                            fontSize  = 13.sp,
-                            textAlign = TextAlign.Center,
-                            modifier  = Modifier.padding(16.dp)
-                        )
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth().weight(1f)
-                            .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        items(state.actionLog) { entry ->
-                            Text(entry, fontSize = 15.sp, color = Color(0xFFCCCCCC), fontFamily = FontFamily.Monospace)
-                            HorizontalDivider(color = Color(0xFF2A2A2A), thickness = 0.5.dp)
-                        }
-                    }
-                }
-            }
-
-            Pm25Panel(modifier = Modifier.weight(1.15f).fillMaxHeight())
-            VendorPropsPanel(modifier = Modifier.weight(1f).fillMaxHeight())
-        }
-    }
-
-    if (showUploadDlg) {
-        AlertDialog(
-            onDismissRequest = { if (!isUploading) showUploadDlg = false },
-            title            = { Text("Enviar log ao Firebase") },
-            text             = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(uploadStatus, fontSize = 16.sp, color = HmiFgMuted)
-                    if (isUploading) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = HmiAccent)
-                    }
-                    if (uploadUrl.isNotEmpty()) {
-                        Text(
-                            uploadUrl,
-                            fontSize   = 13.sp,
-                            color      = Color(0xFF4FC3F7),
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                if (uploadUrl.isNotEmpty()) {
-                    TextButton(onClick = {
-                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
-                                as android.content.ClipboardManager
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("log", uploadUrl))
-                        showUploadDlg = false
-                    }) { Text("Copiar link") }
-                } else {
-                    TextButton(
-                        onClick = { showUploadDlg = false },
-                        enabled = !isUploading
-                    ) { Text("OK") }
-                }
-            },
-            dismissButton = if (uploadUrl.isNotEmpty()) {
-                { TextButton(onClick = { showUploadDlg = false }) { Text("Fechar") } }
-            } else null,
-            containerColor    = Color(0xFF1E1E1E),
-            titleContentColor = HmiFg,
-            textContentColor  = HmiFgMuted
-        )
-    }
-
-    if (showMsgDialog) {
-        AlertDialog(
-            onDismissRequest  = { showMsgDialog = false },
-            title             = { Text("Atualização") },
-            text              = { Text(updateMessage) },
-            confirmButton     = { TextButton(onClick = { showMsgDialog = false }) { Text("OK") } },
-            containerColor    = Color(0xFF1E1E1E),
-            titleContentColor = HmiFg,
-            textContentColor  = HmiFgMuted
-        )
-    }
-    if (updateAvailable) {
-        AlertDialog(
-            onDismissRequest = { updateAvailable = false },
-            title  = { Text("Atualização disponível") },
-            text   = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Nova versão disponível: $latestVersion\nVersão atual: $currentVersion")
-                    if (isDownloading) {
-                        Spacer(Modifier.height(4.dp))
-                        Text("Baixando… ${(downloadProgress * 100).toInt()}%", fontSize = 16.sp, color = Color(0xFF4FC3F7))
-                        LinearProgressIndicator(progress = { downloadProgress }, modifier = Modifier.fillMaxWidth(), color = Color(0xFF4FC3F7))
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { if (!isDownloading) startDownload() }, enabled = !isDownloading) {
-                    Text(if (isDownloading) "Baixando..." else "Baixar e Instalar")
-                }
-            },
-            dismissButton = { TextButton(onClick = { updateAvailable = false; downloadJob?.cancel() }) { Text("Cancelar") } },
-            containerColor    = Color(0xFF1E1E1E),
-            titleContentColor = HmiFg,
-            textContentColor  = HmiFgMuted
-        )
-    }
-    if (showPermDialog) {
-        AlertDialog(
-            onDismissRequest = { showPermDialog = false },
-            title = { Text("Permissão necessária") },
-            text  = { Text("Para instalar o app é necessário habilitar a instalação de fontes desconhecidas nas configurações.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showPermDialog = false
-                    permLauncher.launch(
-                        Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                            data = Uri.parse("package:${context.packageName}")
-                        }
-                    )
-                }) { Text("Abrir Configurações") }
-            },
-            dismissButton     = { TextButton(onClick = { showPermDialog = false }) { Text("Cancelar") } },
-            containerColor    = Color(0xFF1E1E1E),
-            titleContentColor = HmiFg,
-            textContentColor  = HmiFgMuted
-        )
-    }
-}
-
 // ─────────────────────────────────────────────────────────────
 // Screen Info Screen
 // ─────────────────────────────────────────────────────────────
@@ -867,6 +427,7 @@ fun ScreenInfoScreen(onNavigateBack: () -> Unit) {
 @Composable
 fun SettingsScreen(onNavigateBack: () -> Unit) {
     val context = LocalContext.current
+    val scope   = rememberCoroutineScope()
     val state   = ClimateStateHolder
     val prefs   = remember { context.getSharedPreferences(UI_PREFS, Context.MODE_PRIVATE) }
 
@@ -894,230 +455,213 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     val selfUid = remember { runCatching { context.applicationInfo.uid }.getOrDefault(-1) }
     val canReachTelnet = selfUid in 0..10999
 
-    Column(modifier = Modifier.fillMaxSize().background(HmiBg).padding(20.dp)) {
+    // Envio de log — veio da tela de debug, que deixou de existir. O log em si ficou
+    // invisível: o serviço continua escrevendo no PersistentLog, e é esse arquivo que
+    // este botão empacota.
+    var isUploading   by remember { mutableStateOf(false) }
+    var uploadStatus  by remember { mutableStateOf("") }
+    var uploadUrl     by remember { mutableStateOf("") }
+    var showUploadDlg by remember { mutableStateOf(false) }
 
-        // Header
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            IconButton(onClick = onNavigateBack, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Voltar", tint = HmiFg, modifier = Modifier.size(20.dp))
+    fun uploadLog() {
+        isUploading   = true
+        uploadUrl     = ""
+        uploadStatus  = "Iniciando…"
+        showUploadDlg = true
+        scope.launch(Dispatchers.IO) {
+            val result = LogUploader.collectAndUpload(context) { msg ->
+                scope.launch(Dispatchers.Main) { uploadStatus = msg }
             }
-            Column {
-                Text("Configurações", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = HmiFg)
-                Text("Preferências do app", fontSize = 17.sp, color = Color(0xFF666666))
-            }
-        }
-
-        Spacer(Modifier.height(20.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
-            shape    = RoundedCornerShape(16.dp)
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Row(
-                    modifier              = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment     = Alignment.CenterVertically
-                ) {
-                    Row(
-                        modifier              = Modifier.weight(1f),
-                        verticalAlignment     = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            "Ativar Temperatura Externa Real (UI)",
-                            fontSize   = 17.sp,
-                            fontWeight = FontWeight.Medium,
-                            color      = HmiFg
-                        )
-                        IconButton(onClick = { showHelp = true }, modifier = Modifier.size(28.dp)) {
-                            Icon(
-                                Icons.Default.Info,
-                                contentDescription = "Ajuda",
-                                tint     = HmiFgMuted,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
+            withContext(Dispatchers.Main) {
+                isUploading = false
+                when (result) {
+                    is LogUploader.Result.Ok -> {
+                        uploadUrl    = result.url
+                        uploadStatus = "Enviado (${result.sizeBytes / 1024} KB)"
+                        state.addLog("[${pm25TimeFmt.format(java.util.Date())}] log enviado ao Firebase")
                     }
-                    Switch(
-                        checked         = realOutsideTempEnabled,
-                        onCheckedChange = { enabled ->
-                            realOutsideTempEnabled       = enabled
-                            state.realOutsideTempEnabled = enabled
-                            prefs.edit().putBoolean(KEY_REAL_OUTSIDE_TEMP, enabled).apply()
-                            state.onRealOutsideTempToggle?.onToggle(enabled)
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor   = Color.White,
-                            checkedTrackColor   = HmiAccent,
-                            uncheckedThumbColor = HmiFgMuted,
-                            uncheckedTrackColor = HmiSurface
-                        )
-                    )
-                }
-                if (!fridaAvailable) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "⚠ Recursos do Frida ausentes neste APK (build debug). Esta opção só funciona no APK do Release/CI.",
-                        fontSize = 13.sp,
-                        color    = Color(0xFFFFB74D)
-                    )
+                    is LogUploader.Result.Err -> uploadStatus = "Erro: ${result.message}"
                 }
             }
         }
+    }
 
-        Spacer(Modifier.height(14.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
-            shape    = RoundedCornerShape(16.dp)
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Row(
-                    modifier              = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment     = Alignment.CenterVertically
-                ) {
-                    Row(
-                        modifier              = Modifier.weight(1f),
-                        verticalAlignment     = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            "Mostrar Card na Home",
-                            fontSize   = 17.sp,
-                            fontWeight = FontWeight.Medium,
-                            color      = HmiFg
-                        )
-                        IconButton(onClick = { showCardHelp = true }, modifier = Modifier.size(28.dp)) {
-                            Icon(
-                                Icons.Default.Info,
-                                contentDescription = "Ajuda",
-                                tint     = HmiFgMuted,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                    Switch(
-                        checked         = homeCardEnabled,
-                        onCheckedChange = { enabled ->
-                            homeCardEnabled       = enabled
-                            state.homeCardEnabled = enabled
-                            prefs.edit().putBoolean(KEY_HOME_CARD, enabled).apply()
-                            state.onHomeCardToggle?.onToggle(enabled)
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor   = Color.White,
-                            checkedTrackColor   = HmiAccent,
-                            uncheckedThumbColor = HmiFgMuted,
-                            uncheckedTrackColor = HmiSurface
-                        )
-                    )
-                }
-                if (!fridaAvailable) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "⚠ Recursos do Frida ausentes neste APK (build debug). Esta opção só funciona no APK do Release/CI.",
-                        fontSize = 13.sp,
-                        color    = Color(0xFFFFB74D)
-                    )
-                }
+    /** Linha Desl./Lig. ligada direto a uma propriedade do carro. */
+    @Composable
+    fun PropRow(label: String, value: String, propKey: String) {
+        OemRow(label) {
+            OemSeg(listOf("Desl.", "Lig."), if (value == "1") 1 else 0, 400.dp) { i ->
+                state.sendCommand(propKey, i.toString())
             }
         }
+    }
 
-        Spacer(Modifier.height(14.dp))
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        OemBackHeader("Configurações", onNavigateBack)
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
-            shape    = RoundedCornerShape(16.dp)
+        Column(
+            modifier = Modifier
+                .absoluteOffset(175.dp, 120.dp)
+                .size(1248.dp, 508.dp)
+                .verticalScroll(rememberScrollState()),
         ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Row(
-                    modifier              = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment     = Alignment.CenterVertically
-                ) {
-                    Row(
-                        modifier              = Modifier.weight(1f),
-                        verticalAlignment     = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            "Subir servidor do Shizuku",
-                            fontSize   = 17.sp,
-                            fontWeight = FontWeight.Medium,
-                            color      = HmiFg
-                        )
-                        IconButton(onClick = { showShizukuHelp = true }, modifier = Modifier.size(28.dp)) {
-                            Icon(
-                                Icons.Default.Info,
-                                contentDescription = "Ajuda",
-                                tint     = HmiFgMuted,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                    Switch(
-                        checked         = startShizukuEnabled,
-                        onCheckedChange = { enabled ->
-                            startShizukuEnabled = enabled
-                            servicePrefs.edit().putBoolean(KEY_START_SHIZUKU, enabled).apply()
-                            // A decisão é tomada no onStartCommand, então só vale no próximo
-                            // ciclo: para e sobe de novo para a pref valer agora.
-                            val intent = Intent(context, ClimateControlService::class.java)
-                            runCatching {
-                                context.stopService(intent)
-                                context.startForegroundService(intent)
-                            }
-                            shizukuUp = SystemPropsUtils.isShizukuReady()
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor   = Color.White,
-                            checkedTrackColor   = HmiAccent,
-                            uncheckedThumbColor = HmiFgMuted,
-                            uncheckedTrackColor = HmiSurface
-                        )
-                    )
+            // ── ar-condicionado (propriedades do carro) ───────────────────────
+            OemSectionTitle("Ar-condicionado")
+
+            PropRow("AQS", state.aqsEnable, CarProps.AQS_ENABLE)
+            PropRow("Íons negativos", state.anionEnable, CarProps.ANION_ENABLE)
+
+            OemRow("Fragrância") {
+                OemSeg(
+                    listOf("Desl.", "Suave", "Normal", "Intenso"),
+                    state.fragranceConcentration.toIntOrNull()?.coerceIn(0, 3) ?: 0,
+                    800.dp,
+                ) { i -> state.sendCommand(CarProps.FRAGRANCE_CONCENTRATION, i.toString()) }
+            }
+            FragranceCards(
+                selected = state.fragranceType.toIntOrNull() ?: -1,
+                onSelect = { i -> state.sendCommand(CarProps.FRAGRANCE_TYPE, i.toString()) },
+            )
+
+            PropRow(
+                "Desembaçador dianteiro\nautomático",
+                state.autoDefrostEnable, CarProps.AUTO_DEFROST,
+            )
+
+            OemRow("Conforto do\nar-condicionado") {
+                // 0/1/2 confirmados: é a mesma codificação que notifyExternalComfortChange
+                // usa para converter a curva vinda do carro em SUAVE/NORMAL/FORTE.
+                OemSeg(
+                    listOf("Econômico", "Padrão", "Potência"),
+                    state.comfortCurve.toIntOrNull()?.coerceIn(0, 2) ?: 1,
+                    600.dp,
+                ) { i -> state.sendCommand(CarProps.COMFORT_CURVE, i.toString()) }
+            }
+
+            PropRow("Limite de\nbateria baixa", state.settingLimitEnable, CarProps.LIMIT_ENABLE)
+
+            // O botão "AC Inteligente" da tela principal hospeda o controle automático do
+            // APP. A propriedade homônima do OEM ganhou casa aqui — é o único lugar onde
+            // ela é escrita.
+            PropRow("A/C inteligente (OEM)", state.intelligentSwitch, CarProps.INTELLIGENT_SWITCH)
+
+            // ── app ───────────────────────────────────────────────────────────
+            OemSectionTitle("Aplicativo")
+
+            OemRow("Temperatura externa real") {
+                OemSeg(listOf("Desl.", "Lig."), if (realOutsideTempEnabled) 1 else 0, 400.dp) { i ->
+                    val enabled = i == 1
+                    realOutsideTempEnabled       = enabled
+                    state.realOutsideTempEnabled = enabled
+                    prefs.edit().putBoolean(KEY_REAL_OUTSIDE_TEMP, enabled).apply()
+                    state.onRealOutsideTempToggle?.onToggle(enabled)
                 }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    if (shizukuUp) "Shizuku agora: ativo" else "Shizuku agora: indisponível",
-                    fontSize = 13.sp,
-                    color    = if (shizukuUp) HmiFgMuted else Color(0xFFFF7043)
+                HelpDot { showHelp = true }
+            }
+            if (!fridaAvailable) {
+                OemNote("Recursos do Frida ausentes neste APK (build debug). Esta opção só funciona no APK do Release/CI.")
+            }
+
+            OemRow("Mostrar card na Home") {
+                OemSeg(listOf("Desl.", "Lig."), if (homeCardEnabled) 1 else 0, 400.dp) { i ->
+                    val enabled = i == 1
+                    homeCardEnabled       = enabled
+                    state.homeCardEnabled = enabled
+                    prefs.edit().putBoolean(KEY_HOME_CARD, enabled).apply()
+                    state.onHomeCardToggle?.onToggle(enabled)
+                }
+                HelpDot { showCardHelp = true }
+            }
+
+            OemRow("Subir servidor do Shizuku") {
+                OemSeg(listOf("Desl.", "Lig."), if (startShizukuEnabled) 1 else 0, 400.dp) { i ->
+                    val enabled = i == 1
+                    startShizukuEnabled = enabled
+                    servicePrefs.edit().putBoolean(KEY_START_SHIZUKU, enabled).apply()
+                    // A decisão é tomada no onStartCommand, então só vale no próximo
+                    // ciclo: para e sobe de novo para a pref valer agora.
+                    val intent = Intent(context, ClimateControlService::class.java)
+                    runCatching {
+                        context.stopService(intent)
+                        context.startForegroundService(intent)
+                    }
+                    shizukuUp = SystemPropsUtils.isShizukuReady()
+                }
+                HelpDot { showShizukuHelp = true }
+            }
+            Text(
+                (if (shizukuUp) "Shizuku agora: ativo" else "Shizuku agora: indisponível") +
+                    "   ·   uid do app: " + (if (selfUid >= 0) selfUid.toString() else "?"),
+                fontSize = 18.sp,
+                color = if (shizukuUp) OemInk3 else Color(0xFFFF7043),
+                modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
+            )
+            if (startShizukuEnabled) {
+                OemNote(
+                    "Só mantenha ligado em centrais sem Impulse. Se já houver um servidor do " +
+                        "Shizuku no ar, o app anexa nele e não sobe o seu."
                 )
-                Text(
-                    "uid do app: " + (if (selfUid >= 0) selfUid.toString() else "?"),
-                    fontSize = 13.sp,
-                    color    = HmiFgMuted
-                )
-                if (startShizukuEnabled) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "⚠ Só mantenha ligado em centrais sem Impulse. Se já houver um servidor " +
-                        "do Shizuku no ar, o app anexa nele e não sobe o seu.",
-                        fontSize = 13.sp,
-                        color    = Color(0xFFFFB74D)
+                if (!canReachTelnet) {
+                    OemNote(
+                        "uid acima de 10999: o firewall da central barra o telnet na porta 23, " +
+                            "então subir o servidor vai falhar. Precisa reinstalar o app pelo " +
+                            "método que dá uid baixo (script de instalação com injeção no " +
+                            "system_server).",
+                        severe = true,
                     )
-                    if (!canReachTelnet) {
-                        Spacer(Modifier.height(8.dp))
+                }
+            }
+
+            OemRow("Diagnóstico") {
+                OemButton(if (isUploading) "Enviando…" else "Enviar log", enabled = !isUploading) {
+                    uploadLog()
+                }
+            }
+
+            UpdateRow()
+
+            Spacer(Modifier.height(40.dp))
+        }
+    }
+
+    if (showUploadDlg) {
+        AlertDialog(
+            onDismissRequest = { if (!isUploading) showUploadDlg = false },
+            title            = { Text("Enviar log ao Firebase") },
+            text             = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(uploadStatus, fontSize = 16.sp, color = HmiFgMuted)
+                    if (isUploading) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = OemAccent)
+                    }
+                    if (uploadUrl.isNotEmpty()) {
                         Text(
-                            "⚠ uid acima de 10999: o firewall da central barra o telnet na porta 23, " +
-                            "então subir o servidor vai falhar. Precisa reinstalar o app pelo método " +
-                            "que dá uid baixo (script de instalação com injeção no system_server).",
-                            fontSize = 13.sp,
-                            color    = Color(0xFFFF7043)
+                            uploadUrl,
+                            fontSize   = 13.sp,
+                            color      = Color(0xFF4FC3F7),
+                            fontFamily = FontFamily.Monospace
                         )
                     }
                 }
-            }
-        }
-
-        Spacer(Modifier.height(14.dp))
-
-        UpdateCard()
+            },
+            confirmButton = {
+                if (uploadUrl.isNotEmpty()) {
+                    TextButton(onClick = {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("log", uploadUrl))
+                        showUploadDlg = false
+                    }) { Text("Copiar link") }
+                } else {
+                    TextButton(onClick = { showUploadDlg = false }, enabled = !isUploading) {
+                        Text("Fechar")
+                    }
+                }
+            },
+            containerColor    = Color(0xFF1E1E1E),
+            titleContentColor = HmiFg,
+            textContentColor  = HmiFgMuted
+        )
     }
 
     if (showHelp) {
@@ -1165,8 +709,63 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     }
 }
 
+/** "?" clicável ao lado do rótulo — as três opções do app mexem em coisas do sistema e
+ *  ninguém acerta o que elas fazem só pelo nome. */
+@Composable
+private fun HelpDot(onClick: () -> Unit) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(Color(0x14FFFFFF))
+            .clickable(onClick = onClick),
+    ) {
+        Text("?", fontSize = 22.sp, color = OemInk2)
+    }
+}
+
+/** Os três frascos do OEM (.fragrow / .fragcard), 254x184 com gap de 19. */
+@Composable
+private fun FragranceCards(selected: Int, onSelect: (Int) -> Unit) {
+    val names = listOf("Wonderland", "Sea breeze", "Flavour mocha")
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(19.dp),
+        modifier = Modifier.padding(start = 440.dp, bottom = 16.dp),
+    ) {
+        names.forEachIndexed { i, name ->
+            val on = i == selected
+            Box(
+                modifier = Modifier
+                    .size(254.dp, 184.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (on) OemAccent.copy(alpha = 0.18f) else Color(0x14F0F1FF))
+                    .clickable { onSelect(i) },
+            ) {
+                Text(
+                    name,
+                    fontSize = 28.sp,
+                    color = if (on) OemInk else OemInk2,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
+                )
+                Image(
+                    painter = painterResource(R.drawable.hvac_frag_bottle),
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    colorFilter = ColorFilter.tint(if (on) OemAccent else OemInk3),
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 24.dp, bottom = 24.dp)
+                        .size(206.dp, 96.dp),
+                )
+            }
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────
-// Atualização do app (Configurações)
+// Atualização do app (linha das Configurações)
 // ─────────────────────────────────────────────────────────────
 
 /**
@@ -1174,7 +773,7 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
  * instalação. A tag do release precisa bater com o versionName (ex. v1.13.0).
  */
 @Composable
-private fun UpdateCard() {
+private fun UpdateRow() {
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
 
@@ -1265,63 +864,37 @@ private fun UpdateCard() {
         }
     }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
-        shape    = RoundedCornerShape(16.dp)
-    ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Atualizar versão",
-                        fontSize   = 17.sp,
-                        fontWeight = FontWeight.Medium,
-                        color      = HmiFg
-                    )
-                    Text(
-                        if (updateAvailable) "Versão $latestVersion disponível — atual $currentVersion"
-                        else "Versão instalada: $currentVersion",
-                        fontSize = 15.sp,
-                        color    = if (updateAvailable) HmiAccent else Color(0xFF888888)
-                    )
-                }
-                Button(
-                    onClick = { if (updateAvailable) startDownload() else checkForUpdates() },
-                    enabled = !isChecking && !isDownloading,
-                    colors  = ButtonDefaults.buttonColors(
-                        containerColor = if (updateAvailable) HmiAccent else Color(0xFF1565C0)
-                    ),
-                    shape   = RoundedCornerShape(10.dp)
-                ) {
-                    Text(
-                        when {
-                            isChecking      -> "Verificando…"
-                            isDownloading   -> "Baixando ${(downloadProgress * 100).toInt()}%"
-                            updateAvailable -> "Baixar e instalar"
-                            else            -> "Verificar agora"
-                        },
-                        fontSize = 16.sp
-                    )
-                }
-            }
-            if (isDownloading) {
-                Spacer(Modifier.height(10.dp))
-                LinearProgressIndicator(
-                    progress = { downloadProgress },
-                    modifier = Modifier.fillMaxWidth(),
-                    color    = HmiAccent
-                )
-            }
-            if (statusText.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Text(statusText, fontSize = 14.sp, color = HmiFgMuted)
-            }
-        }
+    OemRow("Atualização") {
+        OemButton(
+            when {
+                isChecking      -> "Verificando…"
+                isDownloading   -> "Baixando ${(downloadProgress * 100).toInt()}%"
+                updateAvailable -> "Baixar e instalar"
+                else            -> "Verificar agora"
+            },
+            enabled = !isChecking && !isDownloading,
+        ) { if (updateAvailable) startDownload() else checkForUpdates() }
+    }
+    Text(
+        if (updateAvailable) "Versão $latestVersion disponível — atual $currentVersion"
+        else "Versão instalada: $currentVersion" +
+            (if (isPreviewBuild(currentVersion)) "  ·  canal de preview" else ""),
+        fontSize = 18.sp,
+        color    = if (updateAvailable) OemAccent else OemInk3,
+        modifier = Modifier.padding(start = 440.dp, bottom = 4.dp),
+    )
+    if (isDownloading) {
+        LinearProgressIndicator(
+            progress = { downloadProgress },
+            modifier = Modifier.width(400.dp).padding(start = 440.dp, bottom = 12.dp),
+            color    = OemAccent,
+        )
+    }
+    if (statusText.isNotEmpty()) {
+        Text(
+            statusText, fontSize = 18.sp, color = OemInk3,
+            modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
+        )
     }
 
     if (showPermDialog) {
@@ -1350,434 +923,14 @@ private fun UpdateCard() {
 // Shared composables (used by secondary screens)
 // ─────────────────────────────────────────────────────────────
 
-@Composable
-fun InfoCard(
-    modifier      : Modifier = Modifier,
-    label         : String,
-    value         : String,
-    valueColor    : Color,
-    valueFontSize : Int = 28
-) {
-    Card(
-        modifier = modifier,
-        colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
-        shape    = RoundedCornerShape(12.dp)
-    ) {
-        Column(
-            modifier            = Modifier.padding(14.dp).fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(label, fontSize = 17.sp, color = Color(0xFF888888), textAlign = TextAlign.Center)
-            Spacer(Modifier.height(6.dp))
-            Text(value, fontSize = valueFontSize.sp, fontWeight = FontWeight.Bold, color = valueColor, textAlign = TextAlign.Center)
-        }
-    }
-}
-
-@Composable
-fun HvacToggle(label: String, value: String, propKey: String) {
-    val isOn      = value == "1"
-    val isUnknown = value == "--"
-    val bgColor = when {
-        isUnknown -> Color(0xFF2A2A2A)
-        isOn      -> Color(0xFF1B5E20)
-        else      -> Color(0xFF311B92)
-    }
-    val textColor = when {
-        isUnknown -> Color(0xFF888888)
-        isOn      -> Color(0xFF69F0AE)
-        else      -> Color(0xFFB39DDB)
-    }
-    Button(
-        onClick        = { if (!isUnknown) ClimateStateHolder.sendCommand(propKey, if (isOn) "0" else "1") },
-        enabled        = !isUnknown,
-        colors         = ButtonDefaults.buttonColors(
-            containerColor         = bgColor,
-            disabledContainerColor = Color(0xFF2A2A2A)
-        ),
-        shape          = RoundedCornerShape(8.dp),
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(label, fontSize = 16.sp, color = Color(0xFFAAAAAA), textAlign = TextAlign.Center)
-            Text(
-                text       = when (value) { "1" -> "ON"; "0" -> "OFF"; else -> "--" },
-                fontSize   = 14.sp,
-                fontWeight = FontWeight.Bold,
-                color      = textColor
-            )
-        }
-    }
-}
-
 // ─────────────────────────────────────────────────────────────
 // PM2.5 — leitura crua + faixa do enumerador OEM + histórico
 // ─────────────────────────────────────────────────────────────
 
-@Composable
-fun Pm25Panel(modifier: Modifier = Modifier) {
-    val state = ClimateStateHolder
-    val raw   = state.pm25Value
-    val band  = pm25BandIndex(raw)
-    val hasData = band >= 0
-
-    val valueColor = if (hasData) PM25_COLORS[band] else Color(0xFF666666)
-    val bandLabel  = if (hasData) PM25_LABELS[band] else "sem dado"
-
-    Column(modifier = modifier) {
-        Row(
-            modifier              = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment     = Alignment.CenterVertically
-        ) {
-            Text("PM2.5 / Qualidade do ar", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
-            Text(
-                text     = "limpar",
-                fontSize = 14.sp,
-                color    = Color(0xFF4FC3F7),
-                modifier = Modifier.clickable { state.clearPm25History() }
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-
-        Column(
-            modifier = Modifier.fillMaxWidth().weight(1f)
-                .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
-                .padding(10.dp)
-        ) {
-            // Valor cru + faixa
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(
-                    text       = if (raw == "--") "--" else raw,
-                    fontSize   = 34.sp,
-                    fontWeight = FontWeight.Bold,
-                    color      = valueColor,
-                    fontFamily = FontFamily.Monospace
-                )
-                Spacer(Modifier.width(4.dp))
-                Text("µg/m³", fontSize = 14.sp, color = Color(0xFF777777), modifier = Modifier.padding(bottom = 5.dp))
-                Spacer(Modifier.weight(1f))
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(bandLabel, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = valueColor)
-                    Text(
-                        text     = if (hasData) "idx $band · ${PM25_RANGES[band]}" else "fora de todas as faixas",
-                        fontSize = 13.sp,
-                        color    = Color(0xFF777777)
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text       = "min ${fmtPm(state.pm25Min)}   max ${fmtPm(state.pm25Max)}   amostras ${state.pm25History.size}",
-                fontSize   = 13.sp,
-                color      = Color(0xFF777777),
-                fontFamily = FontFamily.Monospace
-            )
-            Spacer(Modifier.height(8.dp))
-
-            // Tabela das 6 faixas, com a ativa destacada
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                for (i in PM25_LABELS.indices) {
-                    val active = i == band
-                    Row(
-                        modifier = Modifier.fillMaxWidth()
-                            .background(
-                                if (active) PM25_COLORS[i].copy(alpha = 0.18f) else Color.Transparent,
-                                RoundedCornerShape(4.dp)
-                            )
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(Modifier.size(8.dp).background(PM25_COLORS[i], CircleShape))
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text       = PM25_RANGES[i],
-                            fontSize   = 13.sp,
-                            color      = if (active) PM25_COLORS[i] else Color(0xFF888888),
-                            fontFamily = FontFamily.Monospace,
-                            modifier   = Modifier.width(70.dp)
-                        )
-                        Text(
-                            text       = PM25_LABELS[i],
-                            fontSize   = 13.sp,
-                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-                            color      = if (active) PM25_COLORS[i] else Color(0xFF888888)
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-            HorizontalDivider(color = Color(0xFF2A2A2A), thickness = 0.5.dp)
-            Spacer(Modifier.height(6.dp))
-
-            if (state.pm25History.isEmpty()) {
-                Text("Aguardando amostras…", fontSize = 13.sp, color = Color(0xFF666666))
-            } else {
-                LazyColumn(
-                    modifier            = Modifier.fillMaxWidth().weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    items(state.pm25History) { s ->
-                        val b = pm25BandIndex(s.value.toString())
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text       = pm25TimeFmt.format(java.util.Date(s.atMs)),
-                                fontSize   = 13.sp,
-                                color      = Color(0xFF666666),
-                                fontFamily = FontFamily.Monospace
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text       = s.value.toString().padStart(4),
-                                fontSize   = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color      = if (b >= 0) PM25_COLORS[b] else Color(0xFF666666),
-                                fontFamily = FontFamily.Monospace
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text     = if (b >= 0) PM25_LABELS[b] else "sem dado",
-                                fontSize = 13.sp,
-                                color    = Color(0xFF999999)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun fmtPm(v: Int) = if (v < 0) "--" else v.toString()
 
 // ─────────────────────────────────────────────────────────────
 // System properties de variante — leitura e escrita via Shizuku
 // ─────────────────────────────────────────────────────────────
-
-@Composable
-fun VendorPropsPanel(modifier: Modifier = Modifier) {
-    val scope = rememberCoroutineScope()
-
-    var demist    by remember { mutableStateOf("…") }
-    var purifier  by remember { mutableStateOf("…") }
-    var busy      by remember { mutableStateOf(false) }
-    var feedback  by remember { mutableStateOf("") }
-
-    fun reload() {
-        scope.launch(Dispatchers.IO) {
-            val d = SystemPropsUtils.get(PROP_AUTO_DEMIST)
-            val p = SystemPropsUtils.get(PROP_AIR_PURIFIER)
-            withContext(Dispatchers.Main) {
-                demist   = d.ifEmpty { "<vazio>" }
-                purifier = p.ifEmpty { "<vazio>" }
-            }
-        }
-    }
-
-    LaunchedEffect(Unit) { reload() }
-
-    fun writeDemist(value: String) {
-        busy = true; feedback = ""
-        scope.launch(Dispatchers.IO) {
-            val err = SystemPropsUtils.set(PROP_AUTO_DEMIST, value)
-            withContext(Dispatchers.Main) {
-                busy = false
-                feedback = err ?: "Gravado = $value. Reinicie o app HVAC para ele reler."
-                ClimateStateHolder.addLog(
-                    "[prop] indoor.automatic.demisting → $value ${if (err == null) "OK" else "FALHOU: $err"}"
-                )
-                reload()
-            }
-        }
-    }
-
-    Column(modifier = modifier) {
-        Row(
-            modifier              = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment     = Alignment.CenterVertically
-        ) {
-            Text("Config de variante", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFAAAAAA))
-            Text(
-                text     = "reler",
-                fontSize = 14.sp,
-                color    = Color(0xFF4FC3F7),
-                modifier = Modifier.clickable(enabled = !busy) { reload() }
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-
-        Column(
-            modifier = Modifier.fillMaxWidth().weight(1f)
-                .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
-                .padding(10.dp)
-        ) {
-            Text("indoor.automatic.demisting", fontSize = 14.sp, color = Color(0xFFCCCCCC), fontFamily = FontFamily.Monospace)
-            Text("Desembaçador dianteiro automático", fontSize = 13.sp, color = Color(0xFF777777))
-            Spacer(Modifier.height(6.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text       = demist,
-                    fontSize   = 26.sp,
-                    fontWeight = FontWeight.Bold,
-                    color      = when (demist) {
-                        "1"  -> Color(0xFF69F0AE)
-                        "0"  -> Color(0xFFB39DDB)
-                        else -> Color(0xFF666666)
-                    },
-                    fontFamily = FontFamily.Monospace
-                )
-                Spacer(Modifier.weight(1f))
-                Button(
-                    onClick        = { writeDemist("0") },
-                    enabled        = !busy && demist != "0",
-                    colors         = ButtonDefaults.buttonColors(containerColor = Color(0xFF311B92)),
-                    shape          = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) { Text("0 · off", fontSize = 15.sp) }
-                Spacer(Modifier.width(6.dp))
-                Button(
-                    onClick        = { writeDemist("1") },
-                    enabled        = !busy && demist != "1",
-                    colors         = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B5E20)),
-                    shape          = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) { Text("1 · on", fontSize = 15.sp) }
-            }
-
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "hasAutoDemist() == 1 revela a linha nas Configurações do app HVAC. " +
-                "A property é lida só no init do ViewModel — sem reiniciar o HVAC nada muda na tela dele.",
-                fontSize = 12.sp,
-                color    = Color(0xFF666666)
-            )
-
-            Spacer(Modifier.height(8.dp))
-            Button(
-                onClick = {
-                    busy = true; feedback = ""
-                    scope.launch(Dispatchers.IO) {
-                        val err = SystemPropsUtils.restartPackage(HVAC_PKG)
-                        withContext(Dispatchers.Main) {
-                            busy = false
-                            feedback = err ?: "HVAC encerrado — abra o app de clima do carro para ver o efeito."
-                        }
-                    }
-                },
-                enabled        = !busy,
-                colors         = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0)),
-                shape          = RoundedCornerShape(8.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                modifier       = Modifier.fillMaxWidth()
-            ) { Text("Reiniciar app HVAC (force-stop)", fontSize = 15.sp) }
-
-            Spacer(Modifier.height(10.dp))
-            HorizontalDivider(color = Color(0xFF2A2A2A), thickness = 0.5.dp)
-            Spacer(Modifier.height(8.dp))
-
-            Text("air.purifier", fontSize = 14.sp, color = Color(0xFFCCCCCC), fontFamily = FontFamily.Monospace)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text       = purifier,
-                    fontSize   = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    color      = Color(0xFFFFB74D),
-                    fontFamily = FontFamily.Monospace
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text     = if (purifier in listOf("2", "3", "5"))
-                        "tem sensor de PM2.5" else "sem sensor de PM2.5",
-                    fontSize = 13.sp,
-                    color    = if (purifier in listOf("2", "3", "5")) Color(0xFF9CCC65) else Color(0xFF888888)
-                )
-            }
-            Text(
-                "Somente leitura. hasAirPMSystem() exige ∈ {2,3,5} — é o que decide se o HVAC mostra a qualidade do ar.",
-                fontSize = 12.sp,
-                color    = Color(0xFF666666)
-            )
-
-            if (feedback.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Text(feedback, fontSize = 13.sp, color = Color(0xFF4FC3F7))
-            }
-            if (!SystemPropsUtils.isShizukuReady()) {
-                Spacer(Modifier.height(6.dp))
-                Text("⚠ Shizuku indisponível — escrita desabilitada.", fontSize = 13.sp, color = Color(0xFFFF7043))
-            }
-        }
-    }
-}
-
-@Composable
-fun HvacReadOnly(modifier: Modifier = Modifier, label: String, value: String) {
-    Card(
-        modifier = modifier,
-        colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
-        shape    = RoundedCornerShape(8.dp)
-    ) {
-        Column(modifier = Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(label, fontSize = 16.sp, color = Color(0xFF888888), textAlign = TextAlign.Center)
-            Spacer(Modifier.height(4.dp))
-            Text(value, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = HmiFg, textAlign = TextAlign.Center)
-        }
-    }
-}
-
-@Composable
-fun TempCard(modifier: Modifier = Modifier, label: String, value: String, color: Color) {
-    Card(
-        modifier = modifier,
-        colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
-        shape    = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(label, fontSize = 17.sp, color = Color(0xFF888888), textAlign = TextAlign.Center)
-            Spacer(Modifier.height(6.dp))
-            Text(value, fontSize = 28.sp, fontWeight = FontWeight.Bold, color = color)
-        }
-    }
-}
-
-@Composable
-fun StatusCard(modifier: Modifier = Modifier, label: String, value: String, color: Color) {
-    Card(
-        modifier = modifier,
-        colors   = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
-        shape    = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(label, fontSize = 17.sp, color = Color(0xFF888888), textAlign = TextAlign.Center)
-            Spacer(Modifier.height(6.dp))
-            Text(value, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = color)
-        }
-    }
-}
-
-@Composable
-fun StatusDot(connected: Boolean) {
-    Row(
-        verticalAlignment     = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Box(
-            modifier = Modifier.size(10.dp).background(
-                color = if (connected) Color(0xFF4CAF50) else Color(0xFF757575),
-                shape = CircleShape
-            )
-        )
-        Text(
-            text     = if (connected) "Conectado" else "Aguardando",
-            fontSize = 15.sp,
-            color    = if (connected) Color(0xFF4CAF50) else Color(0xFF757575)
-        )
-    }
-}
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -1864,5 +1017,3 @@ private fun splitVersion(v: String): Pair<List<Int>, String> {
     return core.split(".").map { it.toIntOrNull() ?: 0 } to pre
 }
 
-private fun formatTemp(value: String) =
-    try { "%.1f°C".format(value.toFloat()) } catch (_: Exception) { value }
