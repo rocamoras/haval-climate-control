@@ -27,16 +27,29 @@ jobs:
 
       # O canal sai da branch, nao de um valor commitado: build.gradle.kts guarda
       # sempre a versao limpa, e a branch preview reescreve o versionName para
-      # "<versao>-preview.<run>" so na hora de compilar. Como "-preview.N" ordena
+      # "<versao>-preview.<n>" so na hora de compilar. Como "-preview.N" ordena
       # ANTES de "<versao>" no semver, quem esta no preview cai sozinho no estavel
       # quando ele sai -- e nunca o contrario.
       - name: Get version from build.gradle.kts
         id: get_version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           BUILD_NUMBER=$(grep -oP 'versionCode = \K[0-9]+' app/build.gradle.kts)
           if [ "${{ github.ref_name }}" = "preview" ]; then
-            VERSION="${VERSION}-preview.${{ github.run_number }}"
+            # Contador proprio, sequencial por versao base e comecando em 2.
+            # github.run_number e compartilhado com os builds do master, entao a
+            # sequencia pularia (preview.7, depois preview.11) e nao diria nada a
+            # quem testa. Aqui o proximo numero sai do maior prerelease ja publicado
+            # para ESTA versao base; sem nenhum, comeca em 2.
+            # grep -F casa string literal: os pontos da versao nao viram coringa,
+            # que era o bug do escape manual (v1x22x1-preview.99 casava com 1.22.1).
+            PREFIX="v${VERSION}-preview."
+            LAST=$(gh release list --limit 100 --json tagName --jq ".[].tagName" \
+                   | grep -F "$PREFIX" | sed "s|^${PREFIX}||" \
+                   | grep -E "^[0-9]+$" | sort -n | tail -1)
+            VERSION="${VERSION}-preview.$(( ${LAST:-1} + 1 ))"
             sed -i "s/versionName = \".*\"/versionName = \"${VERSION}\"/" app/build.gradle.kts
             echo "CHANNEL=preview" >> $GITHUB_OUTPUT
           else
