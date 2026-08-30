@@ -19,10 +19,30 @@ object ClimateStateHolder {
 
     // Toggle properties
     var acEnable              by mutableStateOf("--")
+    var acMaxEnable           by mutableStateOf("--")
     var frontDefrostEnable    by mutableStateOf("--")
+    var rearDefrostEnable     by mutableStateOf("--")
     var heatingEnable         by mutableStateOf("--")
     var intelligentSwitch     by mutableStateOf("--")
     var settingLimitEnable    by mutableStateOf("--")
+
+    // Temperatura
+    var passengerTemp    by mutableStateOf("--")
+    var syncEnable       by mutableStateOf("--")
+
+    // Ar
+    var fanSpeed         by mutableStateOf("--")
+    var fanSpeedRange    by mutableStateOf("--")
+    var blowerMode       by mutableStateOf("--")
+    var cycleMode        by mutableStateOf("--")
+
+    // Qualidade do ar e configurações do HVAC
+    var aqsEnable            by mutableStateOf("--")
+    var anionEnable          by mutableStateOf("--")
+    var autoDefrostEnable    by mutableStateOf("--")
+    var fragranceStatus        by mutableStateOf("--")
+    var fragranceConcentration by mutableStateOf("--")
+    var fragranceType          by mutableStateOf("--")
 
     // EV properties
     var wadeModeEnable        by mutableStateOf("--")
@@ -34,8 +54,8 @@ object ClimateStateHolder {
     var comfortCurve          by mutableStateOf("--")
 
     // ── Telemetria do sensor de PM2.5 ────────────────────────────────────────
-    // Alimentada por updateHvacExtras (ou seja, pelo serviço), não pela tela — assim
-    // o histórico continua sendo coletado com a tela de debug fechada.
+    // Alimentada por updateFromCache (ou seja, pelo serviço), não pela tela — assim
+    // o histórico continua sendo coletado com a tela fechada.
 
     data class Pm25Sample(val value: Int, val atMs: Long)
 
@@ -120,54 +140,64 @@ object ClimateStateHolder {
         commandCallback?.onCommand(key, value)
     }
 
-    fun updateVehicleData(
-        connected: Boolean,
-        inside: String?,
-        driver: String?,
-        power: String?,
-        auto: String?,
-        outside: String?
-    ) {
+    /**
+     * Espelha o cache inteiro do serviço nos campos observáveis.
+     *
+     * Substitui os antigos updateVehicleData/updateHvacExtras/updateSeatData, que eram
+     * posicionais: com 31 propriedades, trocar dois argumentos de lugar viraria um bug
+     * silencioso que só aparece na tela. Aqui a associação é pela chave.
+     */
+    fun updateFromCache(connected: Boolean, cache: Map<String, String?>) {
+        fun v(key: String) = cache[key] ?: "--"
+
         vehicleConnected = connected
-        insideTemp       = inside   ?: "--"
-        outsideTemp      = outside  ?: "--"
-        driverTemp       = driver   ?: "--"
-        powerMode        = power    ?: "--"
-        autoEnable       = auto     ?: "--"
+
+        insideTemp   = v(CarProps.INSIDE_TEMP)
+        outsideTemp  = v(CarProps.OUTSIDE_TEMP)
+        powerMode    = v(CarProps.POWER_MODE)
+        autoEnable   = v(CarProps.AUTO_ENABLE)
+
+        acEnable           = v(CarProps.AC_ENABLE)
+        acMaxEnable        = v(CarProps.ACMAX_ENABLE)
+        heatingEnable      = v(CarProps.HEATING)
+        intelligentSwitch  = v(CarProps.INTELLIGENT_SWITCH)
+
+        driverTemp    = v(CarProps.DRIVER_TEMP)
+        passengerTemp = v(CarProps.PASS_TEMP)
+        syncEnable    = v(CarProps.SYNC_ENABLE)
+
+        fanSpeed      = v(CarProps.FAN_SPEED)
+        fanSpeedRange = v(CarProps.FAN_SPEED_RANGE)
+        blowerMode    = v(CarProps.BLOWER_MODE)
+        cycleMode     = v(CarProps.CYCLE_MODE)
+
+        frontDefrostEnable = v(CarProps.FRONT_DEFROST)
+        rearDefrostEnable  = v(CarProps.REAR_DEFROST)
+
+        aqsEnable   = v(CarProps.AQS_ENABLE)
+        anionEnable = v(CarProps.ANION_ENABLE)
+
+        comfortCurve         = v(CarProps.COMFORT_CURVE)
+        settingLimitEnable   = v(CarProps.LIMIT_ENABLE)
+        autoDefrostEnable    = v(CarProps.AUTO_DEFROST)
+        frontTempRange       = v(CarProps.FRONT_TEMP_RANGE)
+        intelligentTempRange = v(CarProps.INTELLIGENT_TEMP_RANGE)
+
+        fragranceStatus        = v(CarProps.FRAGRANCE_STATUS)
+        fragranceConcentration = v(CarProps.FRAGRANCE_CONCENTRATION)
+        fragranceType          = v(CarProps.FRAGRANCE_TYPE)
+
+        driverSeatVentLevel    = v(CarProps.DRIVER_SEAT_VENT)
+        passengerSeatVentLevel = v(CarProps.PASSENGER_SEAT_VENT)
+
+        wadeModeEnable = v(CarProps.WADE_MODE)
+
+        pm25Value = v(CarProps.PM25)
+        recordPm25(cache[CarProps.PM25])
     }
 
-    fun updateHvacExtras(
-        acEn: String?,
-        frontDefrost: String?,
-        heating: String?,
-        intSwitch: String?,
-        limitEn: String?,
-        frontTRange: String?,
-        intTRange: String?,
-        pm25: String?,
-        comfort: String?,
-        wadeMode: String? = null
-    ) {
-        acEnable             = acEn         ?: "--"
-        frontDefrostEnable   = frontDefrost ?: "--"
-        heatingEnable        = heating      ?: "--"
-        intelligentSwitch    = intSwitch    ?: "--"
-        settingLimitEnable   = limitEn      ?: "--"
-        frontTempRange       = frontTRange  ?: "--"
-        intelligentTempRange = intTRange    ?: "--"
-        pm25Value            = pm25         ?: "--"
-        comfortCurve         = comfort      ?: "--"
-        wadeModeEnable       = wadeMode     ?: "--"
-        recordPm25(pm25)
-    }
-
-    fun updateSeatData(
-        driverVent    : String?,
-        passengerVent : String?
-    ) {
-        driverSeatVentLevel    = driverVent    ?: "--"
-        passengerSeatVentLevel = passengerVent ?: "--"
-    }
+    /** Serviço caiu ou desconectou: tudo volta para "--" e o indicador de conexão apaga. */
+    fun clearVehicleData() = updateFromCache(false, emptyMap())
 
     /** A lista em memória é só o que a tela mostra; o espelho em disco é o que
      *  sobrevive a um reinício e permite reconstruir o que o app fez antes de cair. */

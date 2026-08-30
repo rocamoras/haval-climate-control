@@ -1,0 +1,337 @@
+package br.com.redesurftank.havalclimatecontrol.ui
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import br.com.redesurftank.havalclimatecontrol.CarProps
+import br.com.redesurftank.havalclimatecontrol.ClimateStateHolder
+import br.com.redesurftank.havalclimatecontrol.R
+
+// ─────────────────────────────────────────────────────────────
+// Geometria — medida do com.beantechs.hvac (_O.xml)
+//
+// A central tem fator de escala 1.00 (1 dp = 1 px), então estas constantes são os
+// mesmos números do layout OEM. Não troque por pesos/arranjos: a tela é um posicionamento
+// absoluto de 1732 x 628 dentro de 1792 x 660, e qualquer reflow desalinha do plate de
+// fundo, que é uma imagem só.
+// ─────────────────────────────────────────────────────────────
+
+private const val FRAME_LEFT = 30
+private const val FRAME_W    = 1732
+private const val FRAME_H    = 628
+
+/**
+ * Distribuição de ar (car.hvac.blower_mode).
+ *
+ * ATENÇÃO: a codificação numérica ainda NÃO foi confirmada no carro — o catálogo do
+ * app-tool traz a chave, não os valores. A ordem abaixo é a da fileira do OEM, que é o
+ * palpite mais provável. Toda leitura desconhecida vai para o log persistente
+ * (ver [logUnknownEnum]) para poder ser conferida com o botão "Enviar log".
+ */
+private val BLOWER_MODES = listOf(
+    "1" to R.drawable.hvac_face_on,
+    "2" to R.drawable.hvac_face_foot_off,
+    "3" to R.drawable.hvac_foot_off,
+    "4" to R.drawable.hvac_defrost_foot_off,
+)
+
+/** Recirculação (car.hvac.cycle_mode). Mesma ressalva do blower_mode. */
+private const val CYCLE_RECIRC = "1"
+private const val CYCLE_FRESH  = "0"
+
+private fun ClimateStateHolder.isOn(v: String) = v == "1"
+
+private fun tempOf(raw: String, fallback: Float) = raw.toFloatOrNull() ?: fallback
+
+private fun intOf(raw: String, fallback: Int) =
+    Regex("\\d+").findAll(raw).lastOrNull()?.value?.toIntOrNull() ?: fallback
+
+@Composable
+fun OemClimateScreen(
+    onNavigateToSettings: () -> Unit,
+    onNavigateToScreenInfo: () -> Unit,
+    onToggleAutoControl: (Boolean) -> Unit,
+    onSeatVentAuto: (Boolean) -> Unit,
+    rightHandDrive: Boolean = false,
+) {
+    val s = ClimateStateHolder
+
+    val fanMax   = intOf(s.fanSpeedRange, 7).coerceAtLeast(1)
+    val fanValue = intOf(s.fanSpeed, 0).coerceIn(0, fanMax)
+
+    Box(Modifier.fillMaxSize()) {
+        Box(Modifier.absoluteOffset(x = FRAME_LEFT.dp, y = 0.dp).size(FRAME_W.dp, FRAME_H.dp)) {
+
+            // Render do interior. O asset do OEM vem para volante à direita; o padrão
+            // brasileiro é o espelhado.
+            Image(
+                painter = painterResource(R.drawable.bg_main),
+                contentDescription = null,
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier.fillMaxSize().scale(scaleX = if (rightHandDrive) 1f else -1f, scaleY = 1f),
+            )
+            Plate(R.drawable.top_line, 406, 0, 920, 100)
+            Plate(R.drawable.bg_toolbar_pop, 0, 516, 1732, 112)
+
+            // ── sair ──────────────────────────────────────────────────────────
+            OemIcon(
+                resId = R.drawable.btn_exit, on = false,
+                contentDescription = "Informações da tela",
+                modifier = Modifier.absoluteOffset(22.dp, 20.dp),
+                onClick = onNavigateToScreenInfo,
+            )
+
+            // ── fileira de cima ───────────────────────────────────────────────
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(30.dp),
+                modifier = Modifier.absoluteOffset(503.dp, 0.dp),
+            ) {
+                // Controle automático DO APP (histerese + proteção de partida). Não
+                // escreve car.hvac.Intelligent_switch_enable — a propriedade do OEM
+                // continua só de leitura para nós.
+                OemIcon(
+                    R.drawable.hvac_auto_smart_off, s.autoControlEnabled,
+                    contentDescription = "Controle automático do app",
+                ) { onToggleAutoControl(!s.autoControlEnabled) }
+
+                OemIcon(R.drawable.hvac_power_off, s.isOn(s.powerMode), contentDescription = "Ligar/desligar") {
+                    s.sendCommand(CarProps.POWER_MODE, if (s.isOn(s.powerMode)) "0" else "1")
+                }
+                OemIcon(R.drawable.hvac_auto_off, s.isOn(s.autoEnable), contentDescription = "Modo automático do HVAC") {
+                    s.sendCommand(CarProps.AUTO_ENABLE, if (s.isOn(s.autoEnable)) "0" else "1")
+                }
+                OemIcon(R.drawable.hvac_ac_off, s.isOn(s.acEnable), contentDescription = "Compressor A/C") {
+                    s.sendCommand(CarProps.AC_ENABLE, if (s.isOn(s.acEnable)) "0" else "1")
+                }
+                OemIcon(R.drawable.hvac_ac_max_off, s.isOn(s.acMaxEnable), contentDescription = "A/C máximo") {
+                    s.sendCommand(CarProps.ACMAX_ENABLE, if (s.isOn(s.acMaxEnable)) "0" else "1")
+                }
+                OemIcon(R.drawable.hvac_heat_off, s.isOn(s.heatingEnable), contentDescription = "Aquecimento") {
+                    s.sendCommand(CarProps.HEATING, if (s.isOn(s.heatingEnable)) "0" else "1")
+                }
+            }
+
+            // ── leitura cabine / externa / PM2.5 ──────────────────────────────
+            ReadoutColumn(
+                cabin = s.insideTemp, outside = s.outsideTemp, pm25 = s.pm25Value,
+                modifier = Modifier.absoluteOffset(1400.dp, 40.dp),
+            )
+
+            // ── distribuição de ar ────────────────────────────────────────────
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(32.dp),
+                modifier = Modifier.absoluteOffset(626.dp, 124.dp),
+            ) {
+                BLOWER_MODES.forEach { (value, res) ->
+                    OemIcon(res, s.blowerMode == value, contentDescription = "Distribuição de ar $value") {
+                        s.sendCommand(CarProps.BLOWER_MODE, value)
+                    }
+                }
+            }
+
+            // ── temperaturas ──────────────────────────────────────────────────
+            OemTempScroll(
+                value = tempOf(s.driverTemp, 22f), caption = "motorista",
+                modifier = Modifier.absoluteOffset(250.dp, 173.dp),
+            ) { v ->
+                s.sendCommand(CarProps.DRIVER_TEMP, "%.1f".format(v))
+                if (s.isOn(s.syncEnable)) s.sendCommand(CarProps.PASS_TEMP, "%.1f".format(v))
+            }
+            OemTempScroll(
+                value = tempOf(s.passengerTemp, 22f), caption = "passageiro",
+                modifier = Modifier.absoluteOffset(1282.dp, 173.dp),
+            ) { v ->
+                s.sendCommand(CarProps.PASS_TEMP, "%.1f".format(v))
+                if (s.isOn(s.syncEnable)) s.sendCommand(CarProps.DRIVER_TEMP, "%.1f".format(v))
+            }
+
+            OemIcon(
+                R.drawable.hvac_sync_off, s.isOn(s.syncEnable), size = 154.dp,
+                contentDescription = "Sincronizar temperaturas",
+                modifier = Modifier.absoluteOffset(283.dp, 438.dp),
+            ) {
+                val turningOn = !s.isOn(s.syncEnable)
+                s.sendCommand(CarProps.SYNC_ENABLE, if (turningOn) "1" else "0")
+                // Ao ligar, o passageiro assume a temperatura do motorista — é o que o
+                // OEM faz, e sem isso os dois lados ficariam "sincronizados" divergentes.
+                if (turningOn) s.sendCommand(CarProps.PASS_TEMP, s.driverTemp)
+            }
+
+            // ── ventilador ────────────────────────────────────────────────────
+            Row(
+                verticalAlignment = Alignment.Top,
+                modifier = Modifier.absoluteOffset(842.dp, 452.dp).size(120.dp, 54.dp),
+            ) {
+                Text("$fanValue", fontSize = 44.sp, fontWeight = FontWeight.ExtraLight, color = OemInk)
+                Text(
+                    "/$fanMax", fontSize = 22.sp, fontWeight = FontWeight.ExtraLight, color = OemInk3,
+                    modifier = Modifier.padding(top = 19.dp),
+                )
+            }
+
+            Box(Modifier.absoluteOffset(635.dp, 532.dp).size(462.dp, 80.dp)) {
+                OemIcon(
+                    R.drawable.ic_fans_mix_nor, s.cycleMode == CYCLE_RECIRC, size = 32.dp,
+                    contentDescription = "Recirculação",
+                    modifier = Modifier.absoluteOffset(0.dp, 24.dp),
+                ) {
+                    s.sendCommand(
+                        CarProps.CYCLE_MODE,
+                        if (s.cycleMode == CYCLE_RECIRC) CYCLE_FRESH else CYCLE_RECIRC,
+                    )
+                }
+                OemFanSeek(
+                    value = fanValue, max = fanMax, thumbRes = R.drawable.thumb,
+                    modifier = Modifier.absoluteOffset(52.dp, 0.dp),
+                ) { v -> s.sendCommand(CarProps.FAN_SPEED, v.toString()) }
+                OemIcon(
+                    R.drawable.ic_fans_max_nor, fanValue == fanMax, size = 40.dp,
+                    contentDescription = "Ventilação máxima",
+                    modifier = Modifier.absoluteOffset(422.dp, 20.dp),
+                ) {
+                    s.sendCommand(CarProps.FAN_SPEED, if (fanValue == fanMax) "3" else fanMax.toString())
+                }
+            }
+
+            // ── fileira de baixo ──────────────────────────────────────────────
+            OemIcon(
+                R.drawable.hvac_front_defrost_off, s.isOn(s.frontDefrostEnable),
+                contentDescription = "Desembaçador dianteiro",
+                modifier = Modifier.absoluteOffset(197.dp, 524.dp),
+            ) { s.sendCommand(CarProps.FRONT_DEFROST, if (s.isOn(s.frontDefrostEnable)) "0" else "1") }
+
+            OemIcon(
+                R.drawable.hvac_back_defrost_off, s.isOn(s.rearDefrostEnable),
+                contentDescription = "Desembaçador traseiro",
+                modifier = Modifier.absoluteOffset(343.dp, 524.dp),
+            ) { s.sendCommand(CarProps.REAR_DEFROST, if (s.isOn(s.rearDefrostEnable)) "0" else "1") }
+
+            SeatVent(
+                zone = SeatZone.PASSENGER, level = intOf(s.passengerSeatVentLevel, 0),
+                auto = s.seatVentAutoEnabled, onSeatVentAuto = onSeatVentAuto,
+                modifier = Modifier.absoluteOffset(489.dp, 524.dp),
+            )
+            SeatVent(
+                zone = SeatZone.DRIVER, level = intOf(s.driverSeatVentLevel, 0),
+                auto = s.seatVentAutoEnabled, onSeatVentAuto = onSeatVentAuto,
+                modifier = Modifier.absoluteOffset(1147.dp, 524.dp),
+            )
+
+            OemIcon(
+                R.drawable.hvac_exchange_in, s.cycleMode == CYCLE_FRESH,
+                contentDescription = "Troca de ar",
+                modifier = Modifier.absoluteOffset(1293.dp, 524.dp),
+            ) {
+                s.sendCommand(
+                    CarProps.CYCLE_MODE,
+                    if (s.cycleMode == CYCLE_FRESH) CYCLE_RECIRC else CYCLE_FRESH,
+                )
+            }
+
+            OemIcon(
+                R.drawable.hvac_more, on = false, contentDescription = "Configurações",
+                modifier = Modifier.absoluteOffset(1439.dp, 524.dp),
+                onClick = onNavigateToSettings,
+            )
+        }
+    }
+}
+
+@Composable
+private fun Plate(resId: Int, x: Int, y: Int, w: Int, h: Int) {
+    Image(
+        painter = painterResource(resId),
+        contentDescription = null,
+        contentScale = ContentScale.FillBounds,
+        modifier = Modifier.absoluteOffset(x.dp, y.dp).size(w.dp, h.dp),
+    )
+}
+
+/**
+ * O slot de qualidade do ar do OEM. O PM2.5 entra como terceira linha, logo abaixo da
+ * temperatura externa — é o único lugar da tela onde já há um bloco numérico alinhado
+ * à direita, e a leitura fica onde o motorista já procura os números.
+ */
+@Composable
+private fun ReadoutColumn(cabin: String, outside: String, pm25: String, modifier: Modifier) {
+    Column(
+        modifier = modifier.width(332.dp),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Label("CABINE · EXTERNA")
+        Value("${deg(cabin)}  /  ${deg(outside)}")
+        Spacer(Modifier.height(6.dp))
+        Label("PM2.5")
+        Value(if (pm25 == "--" || pm25.toIntOrNull()?.let { it < 0 } == true) "--" else "$pm25 µg/m³")
+    }
+}
+
+private fun deg(v: String) = v.toFloatOrNull()?.let { "%.1f°".format(it) } ?: "--"
+
+@Composable
+private fun Label(text: String) = Text(
+    text, fontSize = 10.sp, fontWeight = FontWeight.Medium, letterSpacing = 1.8.sp,
+    color = OemInk4, textAlign = TextAlign.End,
+)
+
+@Composable
+private fun Value(text: String) = Text(
+    text, fontSize = 22.sp, fontWeight = FontWeight.Light, color = OemInk2, textAlign = TextAlign.End,
+)
+
+private enum class SeatZone(val prop: String, val dim: Int, val levels: List<Int>) {
+    DRIVER(
+        CarProps.DRIVER_SEAT_VENT, R.drawable.hvac_seat_main_0_dis,
+        listOf(R.drawable.hvac_seat_main_1, R.drawable.hvac_seat_main_2, R.drawable.hvac_seat_main_3),
+    ),
+    PASSENGER(
+        CarProps.PASSENGER_SEAT_VENT, R.drawable.hvac_seat_second_0_dis,
+        listOf(R.drawable.hvac_seat_second_1, R.drawable.hvac_seat_second_2, R.drawable.hvac_seat_second_3),
+    ),
+}
+
+/**
+ * Ciclo 0 → 1 → 2 → 3 → AUTO → 0, num toque só. O AUTO precisa estar no ciclo porque o
+ * serviço já derruba o modo automático sozinho quando detecta alteração externa — sem
+ * um caminho de volta na própria tela, o motorista nunca mais o reativaria.
+ */
+@Composable
+private fun SeatVent(
+    zone: SeatZone,
+    level: Int,
+    auto: Boolean,
+    onSeatVentAuto: (Boolean) -> Unit,
+    modifier: Modifier,
+) {
+    val s = ClimateStateHolder
+    OemSeatIcon(
+        dimRes = zone.dim,
+        litRes = zone.levels.getOrNull(level - 1),
+        auto = auto,
+        modifier = modifier,
+        contentDescription = "Ventilação do banco — " +
+            (if (zone == SeatZone.DRIVER) "motorista" else "passageiro") +
+            (if (auto) " (automático)" else " ($level/3)"),
+    ) {
+        if (auto) {
+            onSeatVentAuto(false)
+            s.sendCommand(zone.prop, "0")
+        } else if (level >= 3) {
+            onSeatVentAuto(true)
+        } else {
+            s.sendCommand(zone.prop, (level + 1).toString())
+        }
+    }
+}

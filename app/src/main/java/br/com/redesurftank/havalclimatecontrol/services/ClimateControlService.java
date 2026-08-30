@@ -39,6 +39,7 @@ import java.util.Objects;
 import java.util.regex.Pattern;
 
 import br.com.redesurftank.havalclimatecontrol.App;
+import br.com.redesurftank.havalclimatecontrol.CarProps;
 import br.com.redesurftank.havalclimatecontrol.ClimateStateHolder;
 import br.com.redesurftank.havalclimatecontrol.broadcastReceivers.RestartReceiver;
 import br.com.redesurftank.havalclimatecontrol.utils.IPTablesUtils;
@@ -105,40 +106,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // Depois de subir o servidor via telnet o restart TEM valor (refaz o bootstrap),
     // então aqui a espera fica curta de proposito — mas nao tao curta quanto 5s.
     private static final long   SHIZUKU_BOOTSTRAP_TIMEOUT_MS = 15_000;
-
-    private static final String PROP_AUTO_ENABLE = "car.hvac.auto_enable";
-    private static final String PROP_INSIDE_TEMP = "car.basic.inside_temp";
-    private static final String PROP_DRIVER_TEMP = "car.hvac.driver_temperature";
-    private static final String PROP_POWER_MODE  = "car.hvac.power_mode";
-
-    private static final String PROP_AC_ENABLE         = "car.hvac.ac_enable";
-    private static final String PROP_FRONT_DEFROST     = "car.hvac.front_defrost_enable";
-    private static final String PROP_HEATING           = "car.hvac.heating_enable";
-    private static final String PROP_INTELLIGENT_SW    = "car.hvac.Intelligent_switch_enable";
-    private static final String PROP_LIMIT_ENABLE      = "car.hvac.setting.limit_enable";
-    private static final String PROP_FRONT_TEMP_RANGE  = "car.hvac.front_temperature_range";
-    private static final String PROP_INT_TEMP_RANGE    = "car.hvac.Intelligent_temperature_range";
-    private static final String PROP_PM25              = "car.hvac.pm2.5_value";
-    private static final String PROP_COMFORT_CURVE     = "car.hvac.setting.comfort_curve";
-
-    private static final String PROP_DRIVER_SEAT_VENT      = "car.comfort_setting.driver_seat_ventilation_level";
-    private static final String PROP_PASSENGER_SEAT_VENT   = "car.comfort_setting.passenger_seat_ventilation_level";
-    private static final String PROP_OUTSIDE_TEMP          = "car.basic.outside_temp";
-    private static final String PROP_WADE_MODE             = "car.ev.setting.wade_mode_enable";
-
-    private static final String[] ALL_PROPS = {
-        "car.hvac.auto_enable", "car.basic.inside_temp",
-        "car.hvac.driver_temperature", "car.hvac.power_mode",
-        "car.hvac.ac_enable", "car.hvac.front_defrost_enable",
-        "car.hvac.heating_enable", "car.hvac.Intelligent_switch_enable",
-        "car.hvac.setting.limit_enable", "car.hvac.front_temperature_range",
-        "car.hvac.Intelligent_temperature_range", "car.hvac.pm2.5_value",
-        "car.hvac.setting.comfort_curve",
-        "car.comfort_setting.driver_seat_ventilation_level",
-        "car.comfort_setting.passenger_seat_ventilation_level",
-        "car.basic.outside_temp",
-        "car.ev.setting.wade_mode_enable"
-    };
 
     private static Method getServiceMethod;
 
@@ -487,20 +454,20 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 return false;
             }
             controlService = IIntelligentVehicleControlService.Stub.asInterface(controlBinder);
-            controlService.addListenerKey(getPackageName(), ALL_PROPS);
+            controlService.addListenerKey(getPackageName(), CarProps.ALL);
             controlService.registerDataChangedListener(getPackageName(), vehicleDataListener);
 
-            String[] values = controlService.fetchDatas(ALL_PROPS);
+            String[] values = controlService.fetchDatas(CarProps.ALL);
             if (values != null) {
-                for (int i = 0; i < ALL_PROPS.length && i < values.length; i++) {
-                    if (values[i] != null) dataCache.put(ALL_PROPS[i], values[i]);
+                for (int i = 0; i < CarProps.ALL.length && i < values.length; i++) {
+                    if (values[i] != null) dataCache.put(CarProps.ALL[i], values[i]);
                 }
             }
 
-            Log.w(TAG, "Connected to vehicle service — auto=" + dataCache.get(PROP_AUTO_ENABLE)
-                    + " inside=" + dataCache.get(PROP_INSIDE_TEMP)
-                    + " set=" + dataCache.get(PROP_DRIVER_TEMP)
-                    + " power=" + dataCache.get(PROP_POWER_MODE));
+            Log.w(TAG, "Connected to vehicle service — auto=" + dataCache.get(CarProps.AUTO_ENABLE)
+                    + " inside=" + dataCache.get(CarProps.INSIDE_TEMP)
+                    + " set=" + dataCache.get(CarProps.DRIVER_TEMP)
+                    + " power=" + dataCache.get(CarProps.POWER_MODE));
 
             ClimateStateHolder.INSTANCE.commandCallback = (key, value) ->
                     backgroundHandler.post(() -> {
@@ -550,7 +517,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 return;
             }
 
-            String insideTempStr = dataCache.get(PROP_INSIDE_TEMP);
+            String insideTempStr = dataCache.get(CarProps.INSIDE_TEMP);
             if (insideTempStr == null) {
                 insideTempWasOffline = true;
                 pushState(true, null);
@@ -579,10 +546,10 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 lastSentComfortCurve  = null;
                 lastSentDriverVent    = null;
                 lastSentPassengerVent = null;
-                String acEnableStr = dataCache.get(PROP_AC_ENABLE);
-                if (!"1".equals(acEnableStr) && "1".equals(dataCache.get(PROP_AUTO_ENABLE))) {
-                    sendHvacCommand(PROP_AC_ENABLE, "1");
-                    dataCache.put(PROP_AC_ENABLE, "1");
+                String acEnableStr = dataCache.get(CarProps.AC_ENABLE);
+                if (!"1".equals(acEnableStr) && "1".equals(dataCache.get(CarProps.AUTO_ENABLE))) {
+                    sendHvacCommand(CarProps.AC_ENABLE, "1");
+                    dataCache.put(CarProps.AC_ENABLE, "1");
                     acOffTimestamp = 0;
                     backgroundHandler.removeCallbacks(acOffCheckRunnable);
                     logEntry = timeFormat.format(new Date()) + "  AC ligado — partida do carro (30s protegido)";
@@ -590,17 +557,17 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             }
 
             // Bloco A — AC + comfort curve (requer modo auto do HVAC ligado)
-            String autoEnable = dataCache.get(PROP_AUTO_ENABLE);
+            String autoEnable = dataCache.get(CarProps.AUTO_ENABLE);
             if ("1".equals(autoEnable)) {
-                String driverTempStr = dataCache.get(PROP_DRIVER_TEMP);
-                String acEnableStr   = dataCache.get(PROP_AC_ENABLE);
+                String driverTempStr = dataCache.get(CarProps.DRIVER_TEMP);
+                String acEnableStr   = dataCache.get(CarProps.AC_ENABLE);
                 if (driverTempStr != null && acEnableStr != null) {
                     float setTemp  = Float.parseFloat(driverTempStr);
                     boolean isAcOn = "1".equals(acEnableStr);
 
                     // Histerese variável conforme temperatura externa
                     float hysteresis = 0.5f;
-                    String outsideTempStr = dataCache.get(PROP_OUTSIDE_TEMP);
+                    String outsideTempStr = dataCache.get(CarProps.OUTSIDE_TEMP);
                     if (outsideTempStr != null) {
                         try {
                             if (Float.parseFloat(outsideTempStr) > 28f) hysteresis = 1.0f;
@@ -619,8 +586,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                                 "AC desligado — interna %.1f°C ≤ set %.1f°C (histerese %.1f°C)",
                                 insideTemp, setTemp, hysteresis);
                         Log.w(TAG, msg);
-                        sendHvacCommand(PROP_AC_ENABLE, "0");
-                        dataCache.put(PROP_AC_ENABLE, "0");
+                        sendHvacCommand(CarProps.AC_ENABLE, "0");
+                        dataCache.put(CarProps.AC_ENABLE, "0");
                         acOffTimestamp = System.currentTimeMillis();
                         backgroundHandler.removeCallbacks(acOffCheckRunnable);
                         backgroundHandler.postDelayed(acOffCheckRunnable, 62_000L);
@@ -632,14 +599,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                                 : String.format(Locale.getDefault(), "interna %.1f°C = set %.1f°C após >1 min", insideTemp, setTemp);
                         String msg = "AC ligado — " + reason;
                         Log.w(TAG, msg);
-                        sendHvacCommand(PROP_AC_ENABLE, "1");
-                        dataCache.put(PROP_AC_ENABLE, "1");
+                        sendHvacCommand(CarProps.AC_ENABLE, "1");
+                        dataCache.put(CarProps.AC_ENABLE, "1");
                         acOffTimestamp = 0;
                         backgroundHandler.removeCallbacks(acOffCheckRunnable);
                         logEntry = timeFormat.format(new Date()) + "  " + msg;
                     }
 
-                    String currentCurve = dataCache.get(PROP_COMFORT_CURVE);
+                    String currentCurve = dataCache.get(CarProps.COMFORT_CURVE);
                     String cMode = ClimateStateHolder.INSTANCE.getComfortMode();
 
                     // Se o modo foi alterado pelo app, reinicia rastreamento para evitar falsos positivos
@@ -668,7 +635,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             case "FORTE":  desiredCurve = "2"; break;
                             default: {
                                 float oTemp = 0f;
-                                String oStr = dataCache.get(PROP_OUTSIDE_TEMP);
+                                String oStr = dataCache.get(CarProps.OUTSIDE_TEMP);
                                 if (oStr != null) {
                                     try { oTemp = Float.parseFloat(oStr); } catch (NumberFormatException ignored) {}
                                 }
@@ -683,8 +650,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                                     "Comfort curve → %s — interna %.1f°C", desiredCurve, insideTemp);
                             Log.w(TAG, msg);
                             lastSentComfortCurve = desiredCurve;
-                            sendHvacCommand(PROP_COMFORT_CURVE, desiredCurve);
-                            dataCache.put(PROP_COMFORT_CURVE, desiredCurve);
+                            sendHvacCommand(CarProps.COMFORT_CURVE, desiredCurve);
+                            dataCache.put(CarProps.COMFORT_CURVE, desiredCurve);
                             if (logEntry == null) logEntry = timeFormat.format(new Date()) + "  " + msg;
                         }
                     }
@@ -694,8 +661,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             // Bloco B — Ventilação dos bancos (independente do modo auto do HVAC)
             boolean seatVentAutoNow = ClimateStateHolder.INSTANCE.getSeatVentAutoEnabled();
             if (seatVentAutoNow) {
-                String currentDriverVent    = dataCache.get(PROP_DRIVER_SEAT_VENT);
-                String currentPassengerVent = dataCache.get(PROP_PASSENGER_SEAT_VENT);
+                String currentDriverVent    = dataCache.get(CarProps.DRIVER_SEAT_VENT);
+                String currentPassengerVent = dataCache.get(CarProps.PASSENGER_SEAT_VENT);
 
                 // Ao (re)ativar o modo AUTO, reinicia rastreamento para evitar falsos positivos
                 if (!prevSeatVentAuto) {
@@ -729,13 +696,13 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
                     if (!desiredVentLevel.equals(currentDriverVent)) {
                         lastSentDriverVent = desiredVentLevel;
-                        sendHvacCommand(PROP_DRIVER_SEAT_VENT, desiredVentLevel);
-                        dataCache.put(PROP_DRIVER_SEAT_VENT, desiredVentLevel);
+                        sendHvacCommand(CarProps.DRIVER_SEAT_VENT, desiredVentLevel);
+                        dataCache.put(CarProps.DRIVER_SEAT_VENT, desiredVentLevel);
                     }
                     if (!desiredVentLevel.equals(currentPassengerVent)) {
                         lastSentPassengerVent = desiredVentLevel;
-                        sendHvacCommand(PROP_PASSENGER_SEAT_VENT, desiredVentLevel);
-                        dataCache.put(PROP_PASSENGER_SEAT_VENT, desiredVentLevel);
+                        sendHvacCommand(CarProps.PASSENGER_SEAT_VENT, desiredVentLevel);
+                        dataCache.put(CarProps.PASSENGER_SEAT_VENT, desiredVentLevel);
                     }
                     if (ventChanged && logEntry == null) {
                         String msg = String.format(Locale.getDefault(),
@@ -749,19 +716,19 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             }
 
             // Bloco C — Aquecimento por temperatura externa
-            String outsideTempForHeating = dataCache.get(PROP_OUTSIDE_TEMP);
+            String outsideTempForHeating = dataCache.get(CarProps.OUTSIDE_TEMP);
             if (outsideTempForHeating != null) {
                 try {
                     float outsideTemp = Float.parseFloat(outsideTempForHeating);
                     String desiredHeating = outsideTemp < 20f ? "1" : "0";
-                    String currentHeating = dataCache.get(PROP_HEATING);
+                    String currentHeating = dataCache.get(CarProps.HEATING);
                     if (!desiredHeating.equals(currentHeating)) {
                         String msg = String.format(Locale.getDefault(),
                                 "Aquecimento → %s — externa %.1f°C",
                                 "1".equals(desiredHeating) ? "ligado" : "desligado", outsideTemp);
                         Log.w(TAG, msg);
-                        sendHvacCommand(PROP_HEATING, desiredHeating);
-                        dataCache.put(PROP_HEATING, desiredHeating);
+                        sendHvacCommand(CarProps.HEATING, desiredHeating);
+                        dataCache.put(CarProps.HEATING, desiredHeating);
                         if (logEntry == null) logEntry = timeFormat.format(new Date()) + "  " + msg;
                     }
                 } catch (NumberFormatException ignored) {}
@@ -774,31 +741,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     }
 
     private void pushState(boolean connected, String logEntry) {
-        String inside      = dataCache.get(PROP_INSIDE_TEMP);
-        String driver      = dataCache.get(PROP_DRIVER_TEMP);
-        String power       = dataCache.get(PROP_POWER_MODE);
-        String auto        = dataCache.get(PROP_AUTO_ENABLE);
-        String acEn        = dataCache.get(PROP_AC_ENABLE);
-        String frontDef    = dataCache.get(PROP_FRONT_DEFROST);
-        String heating     = dataCache.get(PROP_HEATING);
-        String intSw       = dataCache.get(PROP_INTELLIGENT_SW);
-        String limitEn     = dataCache.get(PROP_LIMIT_ENABLE);
-        String frontTRange = dataCache.get(PROP_FRONT_TEMP_RANGE);
-        String intTRange   = dataCache.get(PROP_INT_TEMP_RANGE);
-        String pm25        = dataCache.get(PROP_PM25);
-        String comfort     = dataCache.get(PROP_COMFORT_CURVE);
-        String wadeMode    = dataCache.get(PROP_WADE_MODE);
+        // Copia defensiva: dataCache continua sendo mutado na backgroundHandler enquanto
+        // o post abaixo ainda nao rodou na main. A associacao passou a ser por chave
+        // porque com 31 propriedades a lista posicional so criava bug silencioso.
+        final Map<String, String> snapshot = new HashMap<>(dataCache);
         final String finalLog = logEntry;
 
-        String driverVent      = dataCache.get(PROP_DRIVER_SEAT_VENT);
-        String passengerVent   = dataCache.get(PROP_PASSENGER_SEAT_VENT);
-        String outsideTemp     = dataCache.get(PROP_OUTSIDE_TEMP);
-
         mainHandler.post(() -> {
-            ClimateStateHolder.INSTANCE.updateVehicleData(connected, inside, driver, power, auto, outsideTemp);
-            ClimateStateHolder.INSTANCE.updateHvacExtras(acEn, frontDef, heating, intSw, limitEn,
-                    frontTRange, intTRange, pm25, comfort, wadeMode);
-            ClimateStateHolder.INSTANCE.updateSeatData(driverVent, passengerVent);
+            ClimateStateHolder.INSTANCE.updateFromCache(connected, snapshot);
             if (finalLog != null) {
                 ClimateStateHolder.INSTANCE.addLog(finalLog);
             }
@@ -1049,7 +999,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 controlService.unRegisterDataChangedListener(getPackageName(), vehicleDataListener);
         } catch (Exception ignored) {}
         mainHandler.post(() -> {
-            ClimateStateHolder.INSTANCE.updateVehicleData(false, null, null, null, null, null);
+            ClimateStateHolder.INSTANCE.clearVehicleData();
             ClimateStateHolder.INSTANCE.commandCallback = null;
         });
         PersistentLog.w(TAG, "servico destruido");
@@ -1070,8 +1020,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         Shizuku.removeBinderReceivedListener(binderReceivedListener);
         Shizuku.removeRequestPermissionResultListener(permissionResultListener);
         Shizuku.removeBinderDeadListener(this);
-        mainHandler.post(() -> ClimateStateHolder.INSTANCE.updateVehicleData(
-                false, null, null, null, null, null));
+        mainHandler.post(ClimateStateHolder.INSTANCE::clearVehicleData);
         PersistentLog.w(TAG, "REINICIO agendado (+1s) — motivo: " + reason);
         Intent broadcastIntent = new Intent(this, RestartReceiver.class);
         PendingIntent pendingIntent = PendingIntent.getBroadcast(

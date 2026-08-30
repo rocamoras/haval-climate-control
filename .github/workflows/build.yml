@@ -25,11 +25,23 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      # O canal sai da branch, nao de um valor commitado: build.gradle.kts guarda
+      # sempre a versao limpa, e a branch preview reescreve o versionName para
+      # "<versao>-preview.<run>" so na hora de compilar. Como "-preview.N" ordena
+      # ANTES de "<versao>" no semver, quem esta no preview cai sozinho no estavel
+      # quando ele sai -- e nunca o contrario.
       - name: Get version from build.gradle.kts
         id: get_version
         run: |
           VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           BUILD_NUMBER=$(grep -oP 'versionCode = \K[0-9]+' app/build.gradle.kts)
+          if [ "${{ github.ref_name }}" = "preview" ]; then
+            VERSION="${VERSION}-preview.${{ github.run_number }}"
+            sed -i "s/versionName = \".*\"/versionName = \"${VERSION}\"/" app/build.gradle.kts
+            echo "CHANNEL=preview" >> $GITHUB_OUTPUT
+          else
+            echo "CHANNEL=stable" >> $GITHUB_OUTPUT
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
           echo "Detected version: $VERSION (versionCode: $BUILD_NUMBER)"
@@ -78,13 +90,22 @@ jobs:
           path: ${{ env.APK_NAME }}
           retention-days: 30
 
-      # Push em master/preview: publica a Release normalmente (fluxo de update real)
+      # Push em master/preview: publica a Release normalmente (fluxo de update real).
+      # Na preview a release sai marcada como prerelease, e /releases/latest -- o
+      # endpoint que o app estavel consulta -- por definicao NUNCA devolve um
+      # prerelease. E essa flag, e nao o sufixo do nome, que esconde o build de
+      # preview do canal estavel.
       - name: Create git tag and GitHub Release
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v${{ steps.get_version.outputs.VERSION }}"
+          if [ "${{ steps.get_version.outputs.CHANNEL }}" = "preview" ]; then
+            PRERELEASE="--prerelease"
+          else
+            PRERELEASE=""
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # Create local tag (ignore error if it already exists)
@@ -92,7 +113,7 @@ jobs:
           # Push tag to GitHub (ignore error if already pushed)
           git push origin "$TAG" 2>/dev/null || echo "Tag $TAG already pushed"
           # Create release, or just upload the APK if the release already exists
-          gh release create "$TAG" \
+          gh release create "$TAG" $PRERELEASE \
             --title "haval-climate-control-${{ steps.get_version.outputs.VERSION }}" \
             --generate-notes \
             app/build/outputs/apk/release/app-release.apk \

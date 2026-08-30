@@ -7,6 +7,31 @@ Before every commit+push, increment the version in `app/build.gradle.kts`:
 
 The `versionName` is what the update button in `MainActivity.kt` compares against GitHub Releases tags to decide whether to offer a download. Tags in GitHub releases must match `versionName` exactly (e.g. tag `v1.0.1` for `versionName = "1.0.1"`).
 
+## Canais de release (estável × preview)
+
+Há dois canais, e a separação **não** vem do nome da versão — vem da flag `prerelease`
+do GitHub:
+
+| | branch | tag | release | quem enxerga |
+|---|---|---|---|---|
+| estável | `master` | `v1.21.0` | normal | todo mundo |
+| preview | `preview` | `v1.21.0-preview.<run>` | `--prerelease` | só quem já está num APK `-preview` |
+
+- O app estável consulta `/releases/latest`, que **por definição da API do GitHub nunca
+  devolve um prerelease** — é essa a barreira. O sufixo `-preview` sozinho não protegeria
+  nada, porque a comparação numérica o ignora.
+- O app de preview consulta `/releases` (lista completa) e pega o maior. Como
+  `1.21.0-preview.7 < 1.21.0` no semver, o testador **volta sozinho para o estável**
+  quando o release limpo sai. Não existe caminho de volta manual.
+- `build.gradle.kts` guarda sempre a versão **limpa**, nos dois branches. O sufixo
+  `-preview.<run_number>` é injetado pelo CI (`.github/workflows/build.yml`) só quando
+  `github.ref_name == "preview"`.
+- Os dois APKs compartilham o mesmo `applicationId`: um instala por cima do outro, e o
+  bootstrap do Shizuku/uid continua valendo. Para distinguir na tela do carro, o
+  cabeçalho mostra um selo **PREVIEW** quando o `versionName` traz o sufixo.
+- Ao mergear `preview` → `master`, o `versionCode` do master precisa ficar **>=** o que
+  o preview publicou, senão o APK estável não instala por cima (downgrade).
+
 ## Display do Multimedia Haval (medido em campo — 2026-05-10)
 
 | Campo | Valor |

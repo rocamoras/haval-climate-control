@@ -45,6 +45,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import br.com.redesurftank.havalclimatecontrol.ui.OemClimateScreen
 import br.com.redesurftank.havalclimatecontrol.ui.theme.HavalClimateControlTheme
 import br.com.redesurftank.havalclimatecontrol.services.ClimateControlService
 import br.com.redesurftank.havalclimatecontrol.utils.FridaUtils
@@ -54,6 +55,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.text.SimpleDateFormat
@@ -63,8 +65,17 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 private const val TAG = "MainActivity"
-private const val GITHUB_RELEASES_API =
+// Canal estavel: /releases/latest, que por definicao da API do GitHub NUNCA devolve
+// um prerelease. E essa a barreira que impede o app estavel de enxergar um build de
+// preview -- nao o sufixo do versionName, que a comparacao numerica ignoraria.
+private const val GITHUB_RELEASES_LATEST =
     "https://api.github.com/repos/rocamoras/haval-climate-control/releases/latest"
+// Canal preview: lista todos os releases (prereleases inclusos) e escolhe o maior.
+// So o build de preview enxerga os dois canais, e por isso ele sai do preview sozinho
+// quando o estavel passa o numero dele.
+private const val GITHUB_RELEASES_ALL =
+    "https://api.github.com/repos/rocamoras/haval-climate-control/releases?per_page=30"
+private const val PREVIEW_SUFFIX = "-preview"
 private const val UI_PREFS                 = "climate_ui_prefs"
 private const val KEY_AUTO_CONTROL         = "auto_control_enabled"
 private const val KEY_LAST_UPDATE_CHECK    = "last_update_check_ms"
@@ -88,11 +99,7 @@ private val HmiSurface    = Color(0xFF141414)
 private val HmiSurface2   = Color(0xFF1C1C1C)
 private val HmiFg         = Color(0xFFFAFAFA)
 private val HmiFgMuted    = Color(0xFFA3A3A3)
-private val HmiFgDim      = Color(0xFF6B6B6B)
-private val HmiFgFaint    = Color(0xFF404040)
 private val HmiAccent     = Color(0xFF22C55E)
-private val HmiAccentSoft = Color(0x1F22C55E)
-private val HmiAccentEdge = Color(0x6622C55E)
 private val HmiBorder     = Color(0x12FFFFFF)
 private val HmiBorderStr  = Color(0x1FFFFFFF)
 
@@ -100,7 +107,6 @@ private val HmiBorderStr  = Color(0x1FFFFFFF)
 // Constantes reutilizáveis — evitam realocação por recomposição/frame
 // ─────────────────────────────────────────────────────────────
 private val airflowDashInterval = floatArrayOf(12f, 16f)
-private val comfortModeList      = listOf("AUTO", "SUAVE", "NORMAL", "FORTE")
 
 // ─────────────────────────────────────────────────────────────
 // PM2.5 — enumeradores extraídos do com.beantechs.hvac
@@ -147,19 +153,6 @@ private const val PROP_AIR_PURIFIER = "persist.vendor.gwm.cfg.air.purifier"
 private const val HVAC_PKG = "com.beantechs.hvac"
 
 private val pm25TimeFmt = SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-
-/** Desenha um traço de airflow reaproveitando o mesmo Path/Paint (zero alocação por traço). */
-private fun drawAirflow(
-    canvas: android.graphics.Canvas,
-    path: android.graphics.Path,
-    paint: android.graphics.Paint,
-    sx: Float, sy: Float, ex: Float, ey: Float
-) {
-    path.rewind()
-    path.moveTo(sx, sy)
-    path.quadTo((sx + ex) / 2f, sy + (ey - sy) * 0.35f, ex, ey)
-    canvas.drawPath(path, paint)
-}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -262,38 +255,18 @@ fun MainControlScreen(
         val lastCheck = prefs.getLong(KEY_LAST_UPDATE_CHECK, 0L)
         if (System.currentTimeMillis() - lastCheck >= UPDATE_CHECK_INTERVAL_MS) {
             withContext(Dispatchers.IO) {
-                var conn: HttpURLConnection? = null
                 try {
-                    val c = (URL(GITHUB_RELEASES_API).openConnection() as HttpURLConnection)
-                        .also { conn = it }
-                    c.requestMethod = "GET"
-                    c.setRequestProperty("Accept", "application/vnd.github.v3+json")
-                    c.connectTimeout = 10_000
-                    c.readTimeout    = 10_000
-                    if (c.responseCode == 200) {
-                        val json   = JSONObject(c.inputStream.bufferedReader().readText())
-                        val tag    = json.getString("tag_name")
-                        val assets = json.getJSONArray("assets")
-                        var dlUrl: String? = null
-                        for (i in 0 until assets.length()) {
-                            val a = assets.getJSONObject(i)
-                            if (a.getString("name").endsWith(".apk")) {
-                                dlUrl = a.getString("browser_download_url"); break
-                            }
-                        }
-                        withContext(Dispatchers.Main) {
-                            prefs.edit().putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis()).apply()
-                            if (dlUrl != null && compareVersions(tag, currentVersion) > 0) {
-                                latestVersion   = tag
-                                downloadUrl     = dlUrl
-                                updateAvailable = true
-                            }
+                    val rel = fetchNewerRelease(currentVersion)
+                    withContext(Dispatchers.Main) {
+                        prefs.edit().putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis()).apply()
+                        if (rel != null) {
+                            latestVersion   = rel.tag
+                            downloadUrl     = rel.apkUrl
+                            updateAvailable = true
                         }
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Background update check failed: ${e.message}")
-                } finally {
-                    conn?.disconnect()
                 }
             }
         }
@@ -344,95 +317,24 @@ fun MainControlScreen(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(HmiBg)
-            .padding(start = 32.dp, end = 32.dp, top = 24.dp, bottom = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
-    ) {
-        HmiHeader(
-            currentVersion         = currentVersion,
-            devMenuVisible         = devMenuVisible,
-            onVersionDoubleTap     = { devMenuVisible = !devMenuVisible },
-            onNavigateToDebug      = onNavigateToDebug,
-            onNavigateToScreenInfo = onNavigateToScreenInfo,
-            onNavigateToSettings   = onNavigateToSettings
-        )
-
-        if (updateAvailable) {
-            Button(
-                onClick        = { startDownload() },
-                enabled        = !isDownloading,
-                modifier       = Modifier.fillMaxWidth(),
-                colors         = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0)),
-                shape          = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(16.dp)
-            ) {
-                if (isDownloading) {
-                    Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Baixando $latestVersion… ${(downloadProgress * 100).toInt()}%", fontSize = 16.sp)
-                        Spacer(Modifier.height(6.dp))
-                        LinearProgressIndicator(
-                            progress = { downloadProgress },
-                            modifier = Modifier.fillMaxWidth(),
-                            color    = Color.White
-                        )
-                    }
-                } else {
-                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Atualizar para $latestVersion", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                }
+    OemClimateScreen(
+        onNavigateToSettings   = onNavigateToSettings,
+        onNavigateToScreenInfo = onNavigateToScreenInfo,
+        onToggleAutoControl    = { enabled ->
+            autoControlEnabled       = enabled
+            state.autoControlEnabled = enabled
+            prefs.edit().putBoolean(KEY_AUTO_CONTROL, enabled).apply()
+        },
+        onSeatVentAuto         = { enabled ->
+            seatVentAutoEnabled       = enabled
+            state.seatVentAutoEnabled = enabled
+            prefs.edit().putBoolean(KEY_SEAT_VENT_AUTO, enabled).apply()
+            if (!enabled) {
+                state.sendCommand(CarProps.DRIVER_SEAT_VENT,    "0")
+                state.sendCommand(CarProps.PASSENGER_SEAT_VENT, "0")
             }
-        }
-
-        // 3-column hero
-        Row(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(18.dp)
-        ) {
-            AutoMasterCard(
-                modifier = Modifier.width(380.dp).fillMaxHeight(),
-                enabled  = autoControlEnabled,
-                onToggle = { enabled ->
-                    autoControlEnabled       = enabled
-                    state.autoControlEnabled = enabled
-                    prefs.edit().putBoolean(KEY_AUTO_CONTROL, enabled).apply()
-                }
-            )
-            CarVisualizationCard(
-                modifier = Modifier.weight(1f).fillMaxHeight(),
-                autoOn   = autoControlEnabled
-            )
-            TempColumn(
-                modifier = Modifier.width(380.dp).fillMaxHeight()
-            )
-        }
-
-        // Bottom info strip
-        HmiInfoStripRow(
-            state               = state,
-            comfortMode         = comfortMode,
-            onCycleComfort      = {
-                val next = comfortModeList[(comfortModeList.indexOf(comfortMode) + 1) % comfortModeList.size]
-                comfortMode       = next
-                state.comfortMode = next
-                prefs.edit().putString(KEY_COMFORT_MODE, next).apply()
-            },
-            seatVentAutoEnabled = seatVentAutoEnabled,
-            onToggleSeatVent    = {
-                val next = !seatVentAutoEnabled
-                seatVentAutoEnabled       = next
-                state.seatVentAutoEnabled = next
-                prefs.edit().putBoolean(KEY_SEAT_VENT_AUTO, next).apply()
-                if (!next) {
-                    state.sendCommand("car.comfort_setting.driver_seat_ventilation_level",    "0")
-                    state.sendCommand("car.comfort_setting.passenger_seat_ventilation_level", "0")
-                }
-            }
-        )
-    }
+        },
+    )
 
     if (showErrDialog) {
         AlertDialog(
@@ -465,913 +367,6 @@ fun MainControlScreen(
             titleContentColor = HmiFg,
             textContentColor  = HmiFgMuted
         )
-    }
-}
-
-// ─────────────────────────────────────────────────────────────
-// HMI composables — Tela Principal
-// ─────────────────────────────────────────────────────────────
-
-@Composable
-private fun HmiHeader(
-    currentVersion: String,
-    devMenuVisible: Boolean,
-    onVersionDoubleTap: () -> Unit,
-    onNavigateToDebug: () -> Unit,
-    onNavigateToScreenInfo: () -> Unit,
-    onNavigateToSettings: () -> Unit
-) {
-    // Lido aqui (não na MainControlScreen) para que só o cabeçalho recomponha ao conectar/desconectar.
-    val connected = ClimateStateHolder.vehicleConnected
-    Row(
-        modifier              = Modifier.fillMaxWidth().height(36.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment     = Alignment.CenterVertically
-    ) {
-        // Brand
-        Row(
-            verticalAlignment     = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(24.dp)
-                    .background(HmiSurface, RoundedCornerShape(6.dp))
-                    .border(1.dp, HmiBorderStr, RoundedCornerShape(6.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("H", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = HmiFg)
-            }
-            Text(
-                "HAVAL · CLIMATE CONTROL",
-                fontSize   = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color      = HmiFgMuted,
-                letterSpacing = 2.sp
-            )
-        }
-
-        // Nav tabs — dev tabs hidden by default, revealed by double-tapping the version
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            HmiNavTab(label = "Principal", number = "01", active = true, onClick = {})
-            if (devMenuVisible) {
-                HmiNavTab(label = "HVAC",    number = "02", active = false, onClick = onNavigateToDebug)
-                HmiNavTab(label = "Tela",    number = "03", active = false, onClick = onNavigateToScreenInfo)
-            }
-        }
-
-        // Status cluster
-        Row(
-            verticalAlignment     = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .border(1.dp, HmiBorder, RoundedCornerShape(999.dp))
-                    .background(HmiSurface, RoundedCornerShape(999.dp))
-                    .padding(start = 10.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .background(
-                            if (connected) HmiAccent else HmiFgDim,
-                            CircleShape
-                        )
-                )
-                Text(
-                    if (connected) "online" else "offline",
-                    fontSize      = 11.sp,
-                    fontWeight    = FontWeight.Medium,
-                    color         = HmiFgMuted,
-                    letterSpacing = 1.5.sp
-                )
-            }
-            Text(
-                "v$currentVersion",
-                fontSize      = 11.sp,
-                color         = if (devMenuVisible) HmiAccent else HmiFgDim,
-                fontFamily    = FontFamily.Monospace,
-                letterSpacing = 0.5.sp,
-                modifier      = Modifier.pointerInput(Unit) {
-                    detectTapGestures(onDoubleTap = { onVersionDoubleTap() })
-                }
-            )
-            // Engrenagem — acesso ao menu de Configurações (sempre visível)
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .background(HmiSurface, RoundedCornerShape(8.dp))
-                    .border(1.dp, HmiBorderStr, RoundedCornerShape(8.dp))
-                    .clickable(onClick = onNavigateToSettings),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Default.Settings,
-                    contentDescription = "Configurações",
-                    tint     = HmiFgMuted,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun HmiNavTab(label: String, number: String, active: Boolean, onClick: () -> Unit) {
-    val hPad = if (active) 15.dp else 16.dp
-    val vPad = if (active) 7.dp  else 8.dp
-    Row(
-        modifier = Modifier
-            .background(if (active) HmiSurface2 else Color.Transparent, RoundedCornerShape(999.dp))
-            .then(
-                if (active) Modifier.border(1.dp, HmiBorderStr, RoundedCornerShape(999.dp))
-                else Modifier
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = hPad, vertical = vPad),
-        verticalAlignment     = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Text(
-            number,
-            fontSize      = 11.sp,
-            color         = if (active) HmiFgMuted else HmiFgFaint,
-            fontFamily    = FontFamily.Monospace,
-            letterSpacing = 0.sp
-        )
-        Text(
-            label,
-            fontSize   = 13.sp,
-            fontWeight = FontWeight.Medium,
-            color      = if (active) HmiFg else HmiFgDim
-        )
-    }
-}
-
-@Composable
-private fun AutoMasterCard(
-    modifier: Modifier = Modifier,
-    enabled: Boolean,
-    onToggle: (Boolean) -> Unit
-) {
-    val bgBrush = if (enabled)
-        Brush.verticalGradient(listOf(Color(0x1A22C55E), Color(0x0522C55E)))
-    else
-        Brush.verticalGradient(listOf(HmiSurface, Color(0xFF0A0A0A)))
-
-    Box(
-        modifier = modifier
-            .background(bgBrush, RoundedCornerShape(22.dp))
-            .border(1.dp, if (enabled) HmiAccentEdge else HmiBorderStr, RoundedCornerShape(22.dp))
-            .clickable { onToggle(!enabled) }
-            .padding(26.dp)
-    ) {
-        Column(
-            modifier            = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.SpaceBetween
-        ) {
-            // Eyebrow + LED
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically
-            ) {
-                Text(
-                    "SERVIÇO",
-                    fontSize      = 10.sp,
-                    fontWeight    = FontWeight.SemiBold,
-                    color         = HmiFgDim,
-                    letterSpacing = 2.5.sp
-                )
-                Row(
-                    verticalAlignment     = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(9.dp)
-                            .background(if (enabled) HmiAccent else HmiFgFaint, CircleShape)
-                    )
-                    Text(
-                        if (enabled) "ON" else "OFF",
-                        fontSize      = 10.sp,
-                        fontWeight    = FontWeight.SemiBold,
-                        color         = if (enabled) HmiAccent else HmiFgDim,
-                        fontFamily    = FontFamily.Monospace,
-                        letterSpacing = 2.sp
-                    )
-                }
-            }
-
-            // Icon + title
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(
-                    verticalAlignment     = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(56.dp)
-                            .background(
-                                if (enabled) HmiAccentSoft else HmiSurface2,
-                                RoundedCornerShape(14.dp)
-                            )
-                            .border(
-                                1.dp,
-                                if (enabled) HmiAccentEdge else HmiBorder,
-                                RoundedCornerShape(14.dp)
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Default.Autorenew,
-                            contentDescription = null,
-                            tint     = if (enabled) HmiAccent else HmiFgMuted,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                    Text(
-                        "Controle\nAutomático",
-                        fontSize   = 28.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color      = HmiFg,
-                        lineHeight = 30.sp,
-                        letterSpacing = (-0.3).sp
-                    )
-                }
-                Text(
-                    if (enabled) "Sistema ativo — gerenciando AC e ventilação"
-                    else "Desativado — controle manual via painel HVAC",
-                    fontSize   = 13.sp,
-                    color      = if (enabled) HmiAccent else HmiFgMuted,
-                    lineHeight = 18.sp
-                )
-            }
-
-            // Toggle pill
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        if (enabled) HmiAccentSoft else HmiSurface2,
-                        RoundedCornerShape(14.dp)
-                    )
-                    .border(
-                        1.dp,
-                        if (enabled) HmiAccentEdge else HmiBorderStr,
-                        RoundedCornerShape(14.dp)
-                    )
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically
-            ) {
-                Text(
-                    if (enabled) "Habilitado" else "Toque para ativar",
-                    fontSize   = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    color      = if (enabled) HmiFg else HmiFgMuted,
-                    letterSpacing = 0.5.sp
-                )
-                Switch(
-                    checked         = enabled,
-                    onCheckedChange = onToggle,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor   = Color.White,
-                        checkedTrackColor   = HmiAccent,
-                        uncheckedThumbColor = HmiFgMuted,
-                        uncheckedTrackColor = HmiSurface
-                    )
-                )
-            }
-
-            // Footer
-            Row(
-                modifier              = Modifier.fillMaxWidth().padding(top = 14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("modo  AUTO", fontSize = 16.sp, color = HmiFgFaint, fontFamily = FontFamily.Monospace)
-                Text("HVAC · 16 props", fontSize = 16.sp, color = HmiFgFaint, fontFamily = FontFamily.Monospace)
-            }
-        }
-    }
-}
-
-@Composable
-private fun CarVisualizationCard(
-    modifier: Modifier = Modifier,
-    autoOn: Boolean
-) {
-    val setpoint = ClimateStateHolder.driverTemp
-    val infiniteTransition = rememberInfiniteTransition(label = "airflow")
-    val dashOffset by infiniteTransition.animateFloat(
-        initialValue   = 0f,
-        targetValue    = 56f,
-        animationSpec  = infiniteRepeatable(
-            animation  = tween(2000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "dashOffset"
-    )
-
-    // Paint e Path reaproveitados entre frames; só o DashPathEffect (offset) muda por frame.
-    val airflowPaint = remember {
-        android.graphics.Paint().apply {
-            color       = android.graphics.Color.argb(140, 255, 255, 255)
-            style       = android.graphics.Paint.Style.STROKE
-            strokeWidth = 1.8f
-            strokeCap   = android.graphics.Paint.Cap.ROUND
-        }
-    }
-    val airflowPath = remember { android.graphics.Path() }
-
-    Box(
-        modifier = modifier
-            .background(HmiSurface, RoundedCornerShape(22.dp))
-            .border(1.dp, HmiBorder, RoundedCornerShape(22.dp))
-            .padding(18.dp)
-    ) {
-        Column(
-            modifier            = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.SpaceBetween
-        ) {
-            // Setpoint header
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically
-            ) {
-                Text(
-                    "TEMP. SETADA",
-                    fontSize      = 10.sp,
-                    fontWeight    = FontWeight.SemiBold,
-                    color         = HmiFgDim,
-                    letterSpacing = 2.5.sp
-                )
-                Row(
-                    verticalAlignment     = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Text(
-                        try { "%.1f".format(setpoint.toFloat()) } catch (_: Exception) { "--" },
-                        fontSize      = 36.sp,
-                        fontWeight    = FontWeight.Medium,
-                        color         = HmiFg,
-                        letterSpacing = (-1).sp,
-                        fontFamily    = FontFamily.Monospace
-                    )
-                    Text(
-                        "°C",
-                        fontSize  = 19.sp,
-                        color     = HmiFgMuted,
-                        modifier  = Modifier.padding(bottom = 4.dp)
-                    )
-                }
-            }
-
-            // Car canvas
-            Canvas(modifier = Modifier.weight(1f).fillMaxWidth().padding(vertical = 8.dp)) {
-                val w = size.width
-                val h = size.height
-
-                val bodyL = w * 0.30f
-                val bodyR = w * 0.70f
-                val bodyT = h * 0.04f
-                val bodyB = h * 0.96f
-
-                // Shadow
-                drawOval(
-                    color    = Color(0x0AFFFFFF),
-                    topLeft  = Offset(bodyL + 10f, bodyB - 6f),
-                    size     = Size(bodyR - bodyL - 20f, 12f)
-                )
-
-                // Body fill
-                drawRoundRect(
-                    color        = Color(0xFF1A1A1A),
-                    topLeft      = Offset(bodyL, bodyT),
-                    size         = Size(bodyR - bodyL, bodyB - bodyT),
-                    cornerRadius = CornerRadius(32f)
-                )
-                // Body stroke
-                drawRoundRect(
-                    color        = Color(0x14FFFFFF),
-                    topLeft      = Offset(bodyL, bodyT),
-                    size         = Size(bodyR - bodyL, bodyB - bodyT),
-                    cornerRadius = CornerRadius(32f),
-                    style        = Stroke(width = 1f)
-                )
-
-                // Windshield
-                val wsPath = Path().apply {
-                    moveTo(bodyL + 22f, bodyT + 20f)
-                    quadraticTo((bodyL + bodyR) / 2f, bodyT + 4f, bodyR - 22f, bodyT + 20f)
-                    lineTo(bodyR - 28f, h * 0.24f)
-                    quadraticTo((bodyL + bodyR) / 2f, h * 0.20f, bodyL + 28f, h * 0.24f)
-                    close()
-                }
-                drawPath(wsPath, color = Color(0x07FFFFFF))
-                drawPath(wsPath, color = Color(0x10FFFFFF), style = Stroke(width = 1f))
-
-                // Dash vents
-                val ventY  = h * 0.27f
-                val ventH  = 5f
-                val ventSW = (bodyR - bodyL - 48f) / 4.6f
-                for (i in 0..3) {
-                    drawRoundRect(
-                        color        = Color(0x3DFFFFFF),
-                        topLeft      = Offset(bodyL + 24f + i * (ventSW + 5f), ventY),
-                        size         = Size(ventSW, ventH),
-                        cornerRadius = CornerRadius(2f)
-                    )
-                }
-
-                // Center console
-                val consW = w * 0.055f
-                val consX = (bodyL + bodyR) / 2f - consW / 2f
-                drawRoundRect(
-                    color        = Color(0xFF111111),
-                    topLeft      = Offset(consX, h * 0.32f),
-                    size         = Size(consW, h * 0.54f),
-                    cornerRadius = CornerRadius(6f)
-                )
-                drawRoundRect(
-                    color        = Color(0x0AFFFFFF),
-                    topLeft      = Offset(consX, h * 0.32f),
-                    size         = Size(consW, h * 0.54f),
-                    cornerRadius = CornerRadius(6f),
-                    style        = Stroke(width = 1f)
-                )
-
-                val seatW = w * 0.13f
-                val seatH = h * 0.36f
-                val seatT = h * 0.42f
-
-                // Left seat (driver)
-                drawRoundRect(
-                    color        = Color(0xFF181818),
-                    topLeft      = Offset(bodyL + 16f, seatT),
-                    size         = Size(seatW, seatH),
-                    cornerRadius = CornerRadius(12f)
-                )
-                drawRoundRect(
-                    color        = Color(0x10FFFFFF),
-                    topLeft      = Offset(bodyL + 16f, seatT),
-                    size         = Size(seatW, seatH),
-                    cornerRadius = CornerRadius(12f),
-                    style        = Stroke(width = 1f)
-                )
-
-                // Right seat (passenger)
-                drawRoundRect(
-                    color        = Color(0xFF181818),
-                    topLeft      = Offset(bodyR - 16f - seatW, seatT),
-                    size         = Size(seatW, seatH),
-                    cornerRadius = CornerRadius(12f)
-                )
-                drawRoundRect(
-                    color        = Color(0x10FFFFFF),
-                    topLeft      = Offset(bodyR - 16f - seatW, seatT),
-                    size         = Size(seatW, seatH),
-                    cornerRadius = CornerRadius(12f),
-                    style        = Stroke(width = 1f)
-                )
-
-                // Steering wheel
-                val swCx = bodyL + 16f + seatW / 2f
-                val swCy = h * 0.35f
-                val swR  = 18f
-                drawCircle(
-                    color  = Color(0x52FFFFFF),
-                    radius = swR,
-                    center = Offset(swCx, swCy),
-                    style  = Stroke(width = 2.5f)
-                )
-                drawLine(
-                    color       = Color(0x4CFFFFFF),
-                    start       = Offset(swCx - swR + 4f, swCy),
-                    end         = Offset(swCx + swR - 4f, swCy),
-                    strokeWidth = 2.5f,
-                    cap         = StrokeCap.Round
-                )
-                drawLine(
-                    color       = Color(0x4CFFFFFF),
-                    start       = Offset(swCx, swCy + 4f),
-                    end         = Offset(swCx, swCy + swR - 2f),
-                    strokeWidth = 2.5f,
-                    cap         = StrokeCap.Round
-                )
-
-                // Airflow animations — única alocação por frame é o DashPathEffect (o offset anima)
-                if (autoOn) {
-                    airflowPaint.pathEffect = android.graphics.DashPathEffect(airflowDashInterval, dashOffset)
-                    val sx0 = bodyL + 24f
-                    val sy  = ventY + ventH
-                    drawIntoCanvas { canvas ->
-                        val nc = canvas.nativeCanvas
-                        drawAirflow(nc, airflowPath, airflowPaint, sx0 + ventSW * 0.5f, sy, bodyL + 36f, h * 0.52f)
-                        drawAirflow(nc, airflowPath, airflowPaint, sx0 + ventSW * 1.5f, sy, bodyL + 48f, h * 0.58f)
-                        drawAirflow(nc, airflowPath, airflowPaint, sx0 + ventSW * 2.5f, sy, bodyR - 48f, h * 0.52f)
-                        drawAirflow(nc, airflowPath, airflowPaint, sx0 + ventSW * 3.5f, sy, bodyR - 36f, h * 0.58f)
-                    }
-                }
-            }
-
-            // Status pill
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Row(
-                    modifier = Modifier
-                        .background(HmiSurface2, RoundedCornerShape(999.dp))
-                        .border(1.dp, HmiBorderStr, RoundedCornerShape(999.dp))
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment     = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    if (autoOn) {
-                        Box(Modifier.size(7.dp).background(HmiAccent, CircleShape))
-                    }
-                    Text(
-                        if (autoOn) "MONITORANDO" else "PARADO",
-                        fontSize      = 11.sp,
-                        fontWeight    = FontWeight.Medium,
-                        color         = HmiFgMuted,
-                        fontFamily    = FontFamily.Monospace,
-                        letterSpacing = 1.5.sp
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TempColumn(
-    modifier: Modifier = Modifier
-) {
-    // Lido aqui (não na MainControlScreen) para que só esta coluna recomponha ao mudar temperatura.
-    val insideTemp   = ClimateStateHolder.insideTemp
-    val outsideTemp  = ClimateStateHolder.outsideTemp
-    val setpointTemp = ClimateStateHolder.driverTemp
-    val setF    = try { setpointTemp.toFloat() } catch (_: Exception) { null }
-    val insideF = try { insideTemp.toFloat() }   catch (_: Exception) { null }
-
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        TempReadCard(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            label    = "TEMP. INTERNA",
-            value    = insideTemp,
-            note     = "cabine",
-            delta    = if (setF != null && insideF != null) {
-                val d = insideF - setF
-                (if (d >= 0) "+%.1f" else "%.1f").format(d) + "°"
-            } else "--"
-        )
-        TempReadCard(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            label    = "TEMP. EXTERNA",
-            value    = outsideTemp,
-            note     = "ambiente",
-            delta    = try { "%.1f°".format(outsideTemp.toFloat()) } catch (_: Exception) { "--" }
-        )
-    }
-}
-
-@Composable
-private fun TempReadCard(
-    modifier: Modifier = Modifier,
-    label: String,
-    value: String,
-    note: String,
-    delta: String
-) {
-    Box(
-        modifier = modifier
-            .background(HmiSurface, RoundedCornerShape(22.dp))
-            .border(1.dp, HmiBorder, RoundedCornerShape(22.dp))
-            .padding(horizontal = 26.dp, vertical = 22.dp)
-    ) {
-        Column(
-            modifier            = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.SpaceBetween
-        ) {
-            // Label row
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically
-            ) {
-                Text(
-                    label,
-                    fontSize      = 11.sp,
-                    fontWeight    = FontWeight.SemiBold,
-                    color         = HmiFgDim,
-                    letterSpacing = 2.sp
-                )
-                Icon(
-                    Icons.Default.Thermostat,
-                    contentDescription = null,
-                    tint     = HmiFgFaint,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            // Big value
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(
-                    try { "%.1f".format(value.toFloat()) } catch (_: Exception) { "--" },
-                    fontSize      = 64.sp,
-                    fontWeight    = FontWeight.Medium,
-                    color         = HmiFg,
-                    letterSpacing = (-2).sp,
-                    fontFamily    = FontFamily.Monospace
-                )
-                Text(
-                    "°C",
-                    fontSize  = 24.sp,
-                    color     = HmiFgMuted,
-                    modifier  = Modifier.padding(start = 4.dp, bottom = 8.dp)
-                )
-            }
-
-            // Footer
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically
-            ) {
-                Text(note, fontSize = 17.sp, color = HmiFgDim, fontFamily = FontFamily.Monospace)
-                Box(
-                    modifier = Modifier
-                        .border(1.dp, HmiBorderStr, RoundedCornerShape(999.dp))
-                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                ) {
-                    Text(delta, fontSize = 17.sp, color = HmiFgMuted, fontFamily = FontFamily.Monospace)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun HmiInfoStripRow(
-    state: ClimateStateHolder,
-    comfortMode: String,
-    onCycleComfort: () -> Unit,
-    seatVentAutoEnabled: Boolean,
-    onToggleSeatVent: () -> Unit
-) {
-    val isAcOn = state.acEnable == "1"
-
-    Row(
-        modifier              = Modifier.fillMaxWidth().height(90.dp),
-        horizontalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        // 1. Estado do AC
-        HmiInfoCardBox(modifier = Modifier.weight(1f)) {
-            Row(
-                modifier              = Modifier.fillMaxSize(),
-                verticalAlignment     = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .background(
-                            if (isAcOn) HmiAccentSoft else HmiSurface2,
-                            RoundedCornerShape(12.dp)
-                        )
-                        .border(
-                            1.dp,
-                            if (isAcOn) HmiAccentEdge else HmiBorder,
-                            RoundedCornerShape(12.dp)
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Default.AcUnit,
-                        contentDescription = null,
-                        tint     = if (isAcOn) HmiAccent else HmiFgMuted,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("ESTADO DO AC", fontSize = 16.sp, color = HmiFgDim, letterSpacing = 2.sp, fontWeight = FontWeight.SemiBold)
-                    Row(
-                        verticalAlignment     = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            when (state.acEnable) { "1" -> "Ligado"; "0" -> "Desligado"; else -> "--" },
-                            fontSize      = 22.sp,
-                            fontWeight    = FontWeight.Medium,
-                            color         = HmiFg,
-                            letterSpacing = (-0.3).sp
-                        )
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .background(if (isAcOn) HmiAccent else HmiFgFaint, CircleShape)
-                        )
-                    }
-                }
-            }
-        }
-
-        // 2. Modo Conforto
-        val resolvedCurve = if (comfortMode == "AUTO") {
-            val oTemp = state.outsideTemp.toFloatOrNull() ?: 0f
-            when { oTemp >= 24f -> "2"; oTemp >= 19f -> "1"; else -> "0" }
-        } else null
-        val curveLabel = mapOf("0" to "SUAVE", "1" to "NORMAL", "2" to "FORTE")
-        HmiInfoCardBox(modifier = Modifier.weight(1f).clickable(onClick = onCycleComfort)) {
-            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
-                Text("MODO CONFORTO", fontSize = 16.sp, color = HmiFgDim, letterSpacing = 2.sp, fontWeight = FontWeight.SemiBold)
-                Row(
-                    modifier              = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    comfortModeList.forEach { mode ->
-                        val isActive = mode == comfortMode
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .background(
-                                    if (isActive) HmiAccentSoft else HmiSurface2,
-                                    RoundedCornerShape(6.dp)
-                                )
-                                .border(
-                                    1.dp,
-                                    if (isActive) HmiAccentEdge else HmiBorder,
-                                    RoundedCornerShape(6.dp)
-                                )
-                                .padding(vertical = 6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                mode,
-                                fontSize      = 13.sp,
-                                fontWeight    = FontWeight.SemiBold,
-                                fontFamily    = FontFamily.Monospace,
-                                color         = if (isActive) HmiAccent else HmiFgFaint,
-                                letterSpacing = 1.sp
-                            )
-                        }
-                    }
-                }
-                if (resolvedCurve != null) {
-                    Text(
-                        "→ ${curveLabel[resolvedCurve]} · ${state.outsideTemp}°C ext.",
-                        fontSize      = 12.sp,
-                        color         = HmiFgDim,
-                        fontFamily    = FontFamily.Monospace
-                    )
-                }
-            }
-        }
-
-        // 3. Ventilação Motorista
-        VentInfoCard(
-            modifier    = Modifier.weight(1f),
-            label       = "VENTILAÇÃO MOTORISTA",
-            level       = state.driverSeatVentLevel,
-            autoEnabled = seatVentAutoEnabled,
-            onToggle    = onToggleSeatVent
-        )
-
-        // 4. Ventilação Passageiro
-        VentInfoCard(
-            modifier    = Modifier.weight(1f),
-            label       = "VENTILAÇÃO PASSAGEIRO",
-            level       = state.passengerSeatVentLevel,
-            autoEnabled = seatVentAutoEnabled,
-            onToggle    = onToggleSeatVent
-        )
-    }
-}
-
-@Composable
-private fun HmiInfoCardBox(
-    modifier: Modifier = Modifier,
-    content: @Composable BoxScope.() -> Unit
-) {
-    Box(
-        modifier = modifier
-            .fillMaxHeight()
-            .background(HmiSurface, RoundedCornerShape(16.dp))
-            .border(1.dp, HmiBorder, RoundedCornerShape(16.dp))
-            .padding(horizontal = 18.dp, vertical = 14.dp),
-        content = content
-    )
-}
-
-@Composable
-private fun VentInfoCard(
-    modifier: Modifier = Modifier,
-    label: String,
-    level: String,
-    autoEnabled: Boolean,
-    onToggle: () -> Unit
-) {
-    val levelInt = if (autoEnabled) (level.toIntOrNull() ?: 0) else 0
-
-    HmiInfoCardBox(
-        modifier = modifier.clickable(onClick = onToggle)
-    ) {
-        Row(
-            modifier              = Modifier.fillMaxSize(),
-            verticalAlignment     = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .background(HmiSurface2, RoundedCornerShape(12.dp))
-                    .border(1.dp, HmiBorder, RoundedCornerShape(12.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Default.Air,
-                    contentDescription = null,
-                    tint     = HmiFgMuted,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-            Column(
-                modifier            = Modifier.weight(1f),
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                // Label + badge de modo
-                Row(
-                    modifier              = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment     = Alignment.CenterVertically
-                ) {
-                    Text(
-                        label,
-                        fontSize      = 10.sp,
-                        color         = HmiFgDim,
-                        letterSpacing = 2.sp,
-                        fontWeight    = FontWeight.SemiBold
-                    )
-                    Row(
-                        verticalAlignment     = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .background(
-                                    if (autoEnabled) HmiAccent else HmiFgFaint,
-                                    CircleShape
-                                )
-                        )
-                        Text(
-                            if (autoEnabled) "AUTO" else "OFF",
-                            fontSize      = 12.sp,
-                            fontWeight    = FontWeight.SemiBold,
-                            fontFamily    = FontFamily.Monospace,
-                            color         = if (autoEnabled) HmiAccent else HmiFgDim,
-                            letterSpacing = 1.sp
-                        )
-                    }
-                }
-                Text(
-                    if (autoEnabled) when (level) {
-                        "0" -> "Off"; "1" -> "Nível 1"; "2" -> "Nível 2"; "3" -> "Nível 3"; else -> "--"
-                    } else "--",
-                    fontSize      = 20.sp,
-                    fontWeight    = FontWeight.Medium,
-                    color         = if (autoEnabled) HmiFg else HmiFgFaint,
-                    letterSpacing = (-0.3).sp
-                )
-                Row(
-                    modifier              = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                    for (i in 1..3) {
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(5.dp)
-                                .background(
-                                    if (autoEnabled && i <= levelInt) HmiFg else HmiSurface2,
-                                    RoundedCornerShape(1.dp)
-                                )
-                                .border(
-                                    0.5.dp,
-                                    if (autoEnabled && i <= levelInt) HmiFgMuted else HmiBorder,
-                                    RoundedCornerShape(1.dp)
-                                )
-                        )
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -1485,24 +480,11 @@ fun DebugScreen(onNavigateBack: () -> Unit) {
         isChecking = true
         scope.launch(Dispatchers.IO) {
             try {
-                val conn = URL(GITHUB_RELEASES_API).openConnection() as HttpURLConnection
-                conn.requestMethod = "GET"
-                conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
-                if (conn.responseCode != 200) throw Exception("HTTP ${conn.responseCode}")
-                val json   = JSONObject(conn.inputStream.bufferedReader().readText())
-                val tag    = json.getString("tag_name")
-                val assets = json.getJSONArray("assets")
-                var dlUrl: String? = null
-                for (i in 0 until assets.length()) {
-                    val a = assets.getJSONObject(i)
-                    if (a.getString("name").endsWith(".apk")) {
-                        dlUrl = a.getString("browser_download_url"); break
-                    }
-                }
+                val rel = fetchNewerRelease(currentVersion)
                 withContext(Dispatchers.Main) {
                     isChecking = false
-                    if (dlUrl != null && compareVersions(tag, currentVersion) > 0) {
-                        latestVersion = tag; downloadUrl = dlUrl; updateAvailable = true
+                    if (rel != null) {
+                        latestVersion = rel.tag; downloadUrl = rel.apkUrl; updateAvailable = true
                     } else {
                         updateMessage = "Você já está na versão mais recente ($currentVersion)"
                         showMsgDialog = true
@@ -2262,24 +1244,11 @@ private fun UpdateCard() {
         isChecking = true; statusText = ""
         scope.launch(Dispatchers.IO) {
             try {
-                val conn = URL(GITHUB_RELEASES_API).openConnection() as HttpURLConnection
-                conn.requestMethod = "GET"
-                conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
-                if (conn.responseCode != 200) throw Exception("HTTP ${conn.responseCode}")
-                val json   = JSONObject(conn.inputStream.bufferedReader().readText())
-                val tag    = json.getString("tag_name")
-                val assets = json.getJSONArray("assets")
-                var dlUrl: String? = null
-                for (i in 0 until assets.length()) {
-                    val a = assets.getJSONObject(i)
-                    if (a.getString("name").endsWith(".apk")) {
-                        dlUrl = a.getString("browser_download_url"); break
-                    }
-                }
+                val rel = fetchNewerRelease(currentVersion)
                 withContext(Dispatchers.Main) {
                     isChecking = false
-                    if (dlUrl != null && compareVersions(tag, currentVersion) > 0) {
-                        latestVersion = tag; downloadUrl = dlUrl; updateAvailable = true
+                    if (rel != null) {
+                        latestVersion = rel.tag; downloadUrl = rel.apkUrl; updateAvailable = true
                         statusText    = ""
                     } else {
                         updateAvailable = false
@@ -2814,14 +1783,85 @@ fun StatusDot(connected: Boolean) {
 // Helpers
 // ─────────────────────────────────────────────────────────────
 
-private fun compareVersions(v1: String, v2: String): Int {
-    val p1 = v1.removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
-    val p2 = v2.removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
-    for (i in 0 until minOf(p1.size, p2.size)) {
-        if (p1[i] > p2[i]) return 1
-        if (p1[i] < p2[i]) return -1
+/** O canal sai do proprio versionName: um APK cujo nome de versao traz "-preview" e
+ *  um build de preview, e so ele consulta a lista completa de releases. */
+fun isPreviewBuild(version: String) = version.contains(PREVIEW_SUFFIX)
+
+data class ReleaseInfo(val tag: String, val apkUrl: String)
+
+/** Busca o release mais novo do canal deste build; null quando ja estamos na frente
+ *  dele. Bloqueante -- so chame em Dispatchers.IO. */
+private fun fetchNewerRelease(currentVersion: String): ReleaseInfo? {
+    val preview = isPreviewBuild(currentVersion)
+    val url     = if (preview) GITHUB_RELEASES_ALL else GITHUB_RELEASES_LATEST
+    val conn    = URL(url).openConnection() as HttpURLConnection
+    try {
+        conn.requestMethod = "GET"
+        conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
+        conn.connectTimeout = 10_000
+        conn.readTimeout    = 10_000
+        if (conn.responseCode != 200) throw Exception("HTTP ${conn.responseCode}")
+        val body = conn.inputStream.bufferedReader().readText()
+        val releases = if (preview) {
+            val arr = JSONArray(body)
+            (0 until arr.length()).map { arr.getJSONObject(it) }
+        } else {
+            listOf(JSONObject(body))
+        }
+        var best: ReleaseInfo? = null
+        for (r in releases) {
+            if (r.optBoolean("draft", false)) continue
+            val tag = r.optString("tag_name")
+            val apk = apkAssetUrl(r)
+            if (tag.isEmpty() || apk == null) continue
+            if (compareVersions(tag, currentVersion) <= 0) continue
+            val b = best
+            if (b == null || compareVersions(tag, b.tag) > 0) best = ReleaseInfo(tag, apk)
+        }
+        return best
+    } finally {
+        conn.disconnect()
     }
-    return p1.size.compareTo(p2.size)
+}
+
+private fun apkAssetUrl(release: JSONObject): String? {
+    val assets = release.optJSONArray("assets") ?: return null
+    for (i in 0 until assets.length()) {
+        val a = assets.getJSONObject(i)
+        if (a.optString("name").endsWith(".apk")) {
+            val u = a.optString("browser_download_url")
+            if (u.isNotEmpty()) return u
+        }
+    }
+    return null
+}
+
+/** Semver reduzido: compara os numeros e, no empate, trata o pre-lancamento como
+ *  ANTERIOR ao release limpo (1.21.0-preview < 1.21.0). Sem essa regra o build de
+ *  preview nunca enxergaria o estavel de mesmo numero que o sucede. */
+private fun compareVersions(v1: String, v2: String): Int {
+    val (n1, pre1) = splitVersion(v1)
+    val (n2, pre2) = splitVersion(v2)
+    for (i in 0 until maxOf(n1.size, n2.size)) {
+        val a = n1.getOrElse(i) { 0 }
+        val b = n2.getOrElse(i) { 0 }
+        if (a != b) return a.compareTo(b)
+    }
+    return when {
+        pre1.isEmpty() && pre2.isEmpty() -> 0
+        pre1.isEmpty()                   -> 1
+        pre2.isEmpty()                   -> -1
+        else                             -> pre1.compareTo(pre2)
+    }
+}
+
+/** "v1.21.0-preview.2+build7" -> ([1,21,0], "preview.2") */
+private fun splitVersion(v: String): Pair<List<Int>, String> {
+    val s    = v.removePrefix("v").substringBefore('+')
+    val i    = s.indexOf('-')
+    val core = if (i >= 0) s.substring(0, i) else s
+    val pre  = if (i >= 0) s.substring(i + 1) else ""
+    return core.split(".").map { it.toIntOrNull() ?: 0 } to pre
 }
 
 private fun formatTemp(value: String) =
