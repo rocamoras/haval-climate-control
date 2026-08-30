@@ -139,8 +139,8 @@ fun OemClimateScreen(
                 // Controle automático DO APP (histerese + proteção de partida). Não
                 // escreve car.hvac.Intelligent_switch_enable — a propriedade do OEM
                 // continua só de leitura para nós.
-                OemIcon(
-                    R.drawable.hvac_auto_smart_off, s.autoControlEnabled,
+                OemAppAutoIcon(
+                    R.drawable.hvac_auto_off, s.autoControlEnabled,
                     contentDescription = "Controle automático do app",
                 ) { onToggleAutoControl(!s.autoControlEnabled) }
 

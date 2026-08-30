@@ -341,3 +341,45 @@ fun OemButton(label: String, enabled: Boolean = true, width: Dp = 400.dp, onClic
         Text(label, fontSize = 28.sp, color = if (enabled) OemAccent else OemInk3)
     }
 }
+
+/**
+ * Botão do controle automático DO APP.
+ *
+ * Reaproveita o glifo AUTO do OEM com um ponto de acento no canto. O ícone
+ * "auto inteligente" do mock não existe no com.beantechs.hvac (o APK só traz
+ * hvac_auto_*), e inventar um asset seria pior do que marcar o que já existe — ainda
+ * mais porque esta função é nossa, não do carro, e convém que ela não se confunda com
+ * o AUTO nativo que fica logo ao lado.
+ */
+@Composable
+fun OemAppAutoIcon(
+    baseRes: Int,
+    on: Boolean,
+    modifier: Modifier = Modifier,
+    size: Dp = 96.dp,
+    contentDescription: String? = null,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) },
+    ) {
+        Image(
+            painter = painterResource(baseRes),
+            contentDescription = contentDescription,
+            contentScale = ContentScale.Fit,
+            colorFilter = ColorFilter.tint(if (on) OemAccent else OemInk),
+            modifier = Modifier.fillMaxSize().alpha(if (on) 1f else 0.55f),
+        )
+        Canvas(Modifier.fillMaxSize()) {
+            val r = this.size.minDimension * 0.075f
+            drawCircle(
+                color = if (on) OemAccent else OemInk,
+                radius = r,
+                center = Offset(this.size.width - r * 2.2f, r * 2.2f),
+                alpha = if (on) 1f else 0.55f,
+            )
+        }
+    }
+}
