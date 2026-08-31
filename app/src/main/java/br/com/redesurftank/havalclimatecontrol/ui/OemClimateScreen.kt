@@ -91,7 +91,22 @@ private fun pm25BandIndex(raw: String): Int {
 
 private fun ClimateStateHolder.isOn(v: String) = v == "1"
 
-private fun tempOf(raw: String, fallback: Float) = raw.toFloatOrNull() ?: fallback
+/**
+ * O carro reporta com ponto, mas basta um valor com virgula entrar no cache para a tela
+ * parar de ler — por isso a leitura tolera os dois.
+ */
+private fun tempOf(raw: String, fallback: Float) =
+    raw.replace(',', '.').toFloatOrNull() ?: fallback
+
+/**
+ * Valor de temperatura para MANDAR ao carro.
+ *
+ * Locale.US nao e decoracao: "%.1f".format() usa o locale do aparelho e, numa central
+ * em pt-BR, 22.5f vira "22,5". O servico do veiculo nao parseia isso e, pior, o proprio
+ * cache do servico guarda a string enviada e a devolve para a tela — que tambem nao a
+ * le e cai no fallback. O resultado era o ajuste de temperatura nao sair do lugar.
+ */
+private fun tempCmd(v: Float) = String.format(java.util.Locale.US, "%.1f", v)
 
 private fun intOf(raw: String, fallback: Int) =
     Regex("\\d+").findAll(raw).lastOrNull()?.value?.toIntOrNull() ?: fallback
@@ -184,19 +199,19 @@ fun OemClimateScreen(
                 value = tempOf(s.driverTemp, 22f), caption = "motorista",
                 modifier = Modifier.absoluteOffset(250.dp, 173.dp),
             ) { v ->
-                s.sendCommand(CarProps.DRIVER_TEMP, "%.1f".format(v))
-                if (s.isOn(s.syncEnable)) s.sendCommand(CarProps.PASS_TEMP, "%.1f".format(v))
+                s.sendCommand(CarProps.DRIVER_TEMP, tempCmd(v))
+                if (s.isOn(s.syncEnable)) s.sendCommand(CarProps.PASS_TEMP, tempCmd(v))
             }
             OemTempScroll(
                 value = tempOf(s.passengerTemp, 22f), caption = "passageiro",
                 modifier = Modifier.absoluteOffset(1282.dp, 173.dp),
             ) { v ->
-                s.sendCommand(CarProps.PASS_TEMP, "%.1f".format(v))
-                if (s.isOn(s.syncEnable)) s.sendCommand(CarProps.DRIVER_TEMP, "%.1f".format(v))
+                s.sendCommand(CarProps.PASS_TEMP, tempCmd(v))
+                if (s.isOn(s.syncEnable)) s.sendCommand(CarProps.DRIVER_TEMP, tempCmd(v))
             }
 
             OemIcon(
-                R.drawable.hvac_sync_off, s.isOn(s.syncEnable), size = 154.dp,
+                R.drawable.hvac_sync_off, s.isOn(s.syncEnable), size = 154.dp, height = 56.dp,
                 contentDescription = "Sincronizar temperaturas",
                 modifier = Modifier.absoluteOffset(283.dp, 438.dp),
             ) {
@@ -328,7 +343,9 @@ private fun ReadoutColumn(cabin: String, outside: String, pm25: String, modifier
     }
 }
 
-private fun deg(v: String) = v.toFloatOrNull()?.let { "%.1f°".format(it) } ?: "--"
+// Ponto, nao virgula: e o que a tela do OEM mostra, e o resto da coluna de leitura
+// precisa concordar com os seletores de temperatura.
+private fun deg(v: String) = v.replace(',', '.').toFloatOrNull()?.let { oemTemp(it) + "°" } ?: "--"
 
 @Composable
 private fun Label(text: String) = Text(

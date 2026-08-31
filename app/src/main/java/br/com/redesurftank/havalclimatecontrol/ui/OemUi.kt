@@ -49,6 +49,10 @@ fun OemIcon(
     on: Boolean,
     modifier: Modifier = Modifier,
     size: Dp = 96.dp,
+    /** Altura, quando o drawable nao e quadrado. Sem isto o glifo fica centralizado
+     *  numa caixa quadrada e desce (size - alturaReal) / 2 — foi o que desalinhou o
+     *  botao de sync, que e 154x56 e ganhava uma caixa de 154x154. */
+    height: Dp = size,
     enabled: Boolean = true,
     contentDescription: String? = null,
     onClick: () -> Unit,
@@ -61,7 +65,7 @@ fun OemIcon(
         contentScale = ContentScale.Fit,
         colorFilter = ColorFilter.tint(if (on) OemAccent else OemInk),
         modifier = modifier
-            .size(size)
+            .size(size, height)
             .alpha(if (!enabled) 0.25f else if (on) 1f else 0.55f)
             .pointerInput(enabled) {
                 if (enabled) detectTapGestures(onTap = { onClick() })
@@ -124,6 +128,12 @@ fun OemSeatIcon(
  * numa tela de carro, acertar o passo de 0,5 arrastando é pior do que tocar no número
  * que se quer.
  */
+/** A tela do carro escreve temperatura com PONTO, como o OEM e o layout de referencia.
+ *  Sem locale fixo os vizinhos sairiam "22,5" em pt-BR enquanto o valor selecionado,
+ *  montado por concatenacao, continuaria com ponto — os tres numeros da mesma coluna
+ *  discordando entre si. */
+fun oemTemp(v: Float): String = String.format(java.util.Locale.US, "%.1f", v)
+
 @Composable
 fun OemTempScroll(
     value: Float,
@@ -143,10 +153,13 @@ fun OemTempScroll(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween,
     ) {
+        // fillMaxWidth: o alvo passa a ser a coluna inteira (200dp) e nao so o glifo.
+        // Num toque de carro em movimento, acertar 4 digitos de 40sp e pedir demais.
         Text(
-            "%.1f".format(clamp(value + step)),
+            oemTemp(clamp(value + step)),
             fontSize = 40.sp, fontWeight = FontWeight.ExtraLight, color = OemInk3,
-            modifier = Modifier.pointerInput(value) {
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().pointerInput(value) {
                 detectTapGestures(onTap = { onChange(clamp(value + step)) })
             },
         )
@@ -158,9 +171,10 @@ fun OemTempScroll(
             )
         }
         Text(
-            "%.1f".format(clamp(value - step)),
+            oemTemp(clamp(value - step)),
             fontSize = 40.sp, fontWeight = FontWeight.ExtraLight, color = OemInk3,
-            modifier = Modifier.pointerInput(value) {
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().pointerInput(value) {
                 detectTapGestures(onTap = { onChange(clamp(value - step)) })
             },
         )
