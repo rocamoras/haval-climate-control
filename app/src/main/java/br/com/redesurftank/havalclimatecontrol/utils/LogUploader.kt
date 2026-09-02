@@ -2,6 +2,7 @@ package br.com.redesurftank.havalclimatecontrol.utils
 
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import br.com.redesurftank.havalclimatecontrol.ClimateStateHolder
 import org.json.JSONObject
@@ -313,9 +314,19 @@ object LogUploader {
         // de boot (SYSTEM_BOOT, e 5-7 system_app_wtf do power controller do OEM por
         // boot), e num arquivo real elas afogaram o único system_app_anr que
         // interessava. Ordena por interesse, e só depois por recência.
+        //
+        // Mas só interesse também falhou: em 2026-09-02 o framework fez um soft reboot
+        // (SYSTEM_RESTART, prioridade 4) e as três vagas foram para system_server_crash
+        // de dois dias antes — o único registro do evento do dia ficou fechado. Por isso
+        // o que é deste boot passa na frente, e o interesse desempata dentro de cada
+        // grupo. O ruído de boot (SYSTEM_BOOT, system_app_wtf) já saiu no filtro de rank.
+        val bootStartMs = System.currentTimeMillis() - SystemClock.elapsedRealtime()
         val toOpen = hits
             .filter { dropboxRank(it) <= DROPBOX_OPEN_MAX_RANK }
-            .sortedWith(compareBy({ dropboxRank(it) }, { -dropboxStamp(it) }))
+            .sortedWith(compareBy(
+                { if (dropboxStamp(it) >= bootStartMs) 0 else 1 },
+                { dropboxRank(it) },
+                { -dropboxStamp(it) }))
             .take(DROPBOX_MAX_ENTRIES)
 
         return buildString {

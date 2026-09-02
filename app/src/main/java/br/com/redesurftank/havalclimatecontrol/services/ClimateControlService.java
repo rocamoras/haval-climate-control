@@ -98,6 +98,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final long   EVAL_DEBOUNCE_MS     = 50;     // coalesce bursts de onDataChanged numa única avaliação
     private static final long   IPTABLES_REFRESH_MS  = 60_000; // re-assert da regra iptables (idempotente, antes 15s)
     private static final long   BOOTSTRAP_BACKOFF_MAX_MS = 30_000;
+    // Teto e passo da espera pelo binder depois que o starter mata um shizuku_server orfao.
+    private static final long   OLD_SERVER_KILLED_WAIT_MS = 5_000;
+    private static final long   OLD_SERVER_KILLED_POLL_MS = 100;
     // Medido em campo (log de 23/08): em boot frio o binder do Shizuku leva 4,3s e
     // 6,3s para chegar. O timeout antigo de 10s deixava 37% de margem — um boot mais
     // lento caia em restart(), que na pratica so recomeca a mesma espera. Esperar mais
@@ -333,11 +336,24 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             }
 
                             String result = telnetClient.executeCommand(filePath);
-                            if (Pattern.compile("killed \\d+ \\(shizuku_server\\)").matcher(result).find()) {
-                                Log.w(TAG, "Old Shizuku process killed, waiting 5s...");
-                                Thread.sleep(5000);
-                            }
                             telnetClient.disconnect();
+                            if (Pattern.compile("killed \\d+ \\(shizuku_server\\)").matcher(result).find()) {
+                                // O starter matou um shizuku_server antigo. Acontece a cada
+                                // soft reboot do framework: o server (root, processo proprio)
+                                // sobrevive a morte do system_server, mas fica orfao e inutil.
+                                // Antes havia um Thread.sleep(5000) fixo aqui, e no log de
+                                // 2026-09-02 o binder chegou "apos 1ms" do fim da espera — ou
+                                // seja, ja estava pronto e a Home ficou 5s a mais sem o card.
+                                // Espera o binder novo de verdade, no maximo esse mesmo teto.
+                                long t0 = SystemClock.elapsedRealtime();
+                                while (!ShizukuUtils.isAvailable()
+                                        && SystemClock.elapsedRealtime() - t0 < OLD_SERVER_KILLED_WAIT_MS) {
+                                    Thread.sleep(OLD_SERVER_KILLED_POLL_MS);
+                                }
+                                PersistentLog.w(TAG, "shizuku_server antigo morto pelo starter — binder novo "
+                                        + (ShizukuUtils.isAvailable() ? "pronto" : "ainda nao chegou")
+                                        + " apos " + (SystemClock.elapsedRealtime() - t0) + "ms");
+                            }
 
                             PersistentLog.w(TAG, "bootstrap do Shizuku concluido na tentativa "
                                     + (bootstrapAttempt[0] + 1) + " — esperando o binder");
