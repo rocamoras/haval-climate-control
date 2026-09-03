@@ -210,12 +210,17 @@ fun OemClimateScreen(
                 if (s.isOn(s.syncEnable)) s.sendCommand(CarProps.DRIVER_TEMP, tempCmd(v))
             }
 
+            // Unico botao da tela com DOIS glifos: o OEM troca o desenho, nao so a cor —
+            // elo partido (com as fagulhas em volta) no off, elo fechado no on. Tingir o
+            // asset de off deixava a corrente partida e azul, que nao existe no OEM.
+            val syncOn = s.isOn(s.syncEnable)
             OemIcon(
-                R.drawable.hvac_sync_off, s.isOn(s.syncEnable), size = 154.dp, height = 56.dp,
+                if (syncOn) R.drawable.hvac_sync_on else R.drawable.hvac_sync_off,
+                syncOn, size = 154.dp, height = 56.dp,
                 contentDescription = "Sincronizar temperaturas",
                 modifier = Modifier.absoluteOffset(283.dp, 438.dp),
             ) {
-                val turningOn = !s.isOn(s.syncEnable)
+                val turningOn = !syncOn
                 s.sendCommand(CarProps.SYNC_ENABLE, if (turningOn) "1" else "0")
                 // Ao ligar, o passageiro assume a temperatura do motorista — é o que o
                 // OEM faz, e sem isso os dois lados ficariam "sincronizados" divergentes.

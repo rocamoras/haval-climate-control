@@ -42,6 +42,10 @@ val OemTrackFil = Color(0x295A8BF3)   // .16 do acento
  * pixel a pixel IDÊNTICO e diferem só na cor (#F8F8FA contra #5A8BF3). Por isso um
  * único asset serve para os dois estados — tingir sai mais barato que carregar duas
  * cópias de cada ícone, e mantém os dois estados alinhados por construção.
+ *
+ * A exceção é o SYNC: lá o OEM muda o DESENHO (elo partido no off, elo fechado no on),
+ * então quem chama passa o asset já escolhido pelo estado. Se aparecer outro par assim,
+ * é o mesmo caminho — a tintura continua valendo por cima.
  */
 @Composable
 fun OemIcon(
