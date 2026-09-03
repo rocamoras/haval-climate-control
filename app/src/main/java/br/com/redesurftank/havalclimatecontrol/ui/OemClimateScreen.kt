@@ -1,5 +1,6 @@
 package br.com.redesurftank.havalclimatecontrol.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Text
@@ -80,34 +81,37 @@ private const val CYCLE_RECIRC = "1"
 private const val CYCLE_FRESH  = "2"
 
 // ─────────────────────────────────────────────────────────────
-// PM2.5 — enumeradores extraídos do com.beantechs.hvac
+// PM2.5 — cortes do com.beantechs.hvac, leitura nossa
 //
-// HVACValue.EXCHANGE e HVACValue.QUALITY_DESCRIBE. São os breakpoints de PM2.5 do
-// AQI chinês (GB 3095-2012 / HJ 633-2012), por isso "Bom" só começa abaixo de 75.
+// Os limites vêm de HVACValue.EXCHANGE: são os breakpoints de PM2.5 do AQI chinês
+// (GB 3095-2012 / HJ 633-2012), e é por isso que "bom" só vai até 75 e não até 50.
+// O OEM tem SEIS faixas com nome escrito (excelente, bom, leve, média, pesada,
+// séria, em QUALITY_DESCRIBE); aqui elas viraram três cores numa bolinha, porque
+// num painel de carro a cor se lê de relance e o texto obriga a ler.
 // ─────────────────────────────────────────────────────────────
-private val PM25_EXCHANGE = intArrayOf(250, 150, 115, 75, 35, -1)
-private val PM25_LABELS   = arrayOf(
-    "Poluição séria", "Poluição pesada", "Poluição média",
-    "Poluição leve",  "Bom",             "Excelente"
-)
-private val PM25_COLORS   = arrayOf(
-    Color(0xFFFF5252), Color(0xFFFF7043), Color(0xFFFFA726),
-    Color(0xFFFFD54F), Color(0xFF9CCC65), Color(0xFF4CAF50)
+private val PM25_LIMITS = intArrayOf(75, 35, -1)
+private val PM25_COLORS = arrayOf(
+    Color(0xFFFF5252),  // acima de 75 — junta leve, média, pesada e séria do OEM
+    Color(0xFF9CCC65),  // 36..75 — o verde que o OEM usa no "bom"
+    OemAccent,          // 0..35 — "excelente", no mesmo azul do resto da tela
 )
 
 /**
- * Reproduz MainFragment.bindLiveData$lambda-36 do app OEM: procura o PRIMEIRO índice
- * i em que `valor > EXCHANGE[i]`. Como o último elemento é -1, um valor de -1 (o
- * default de getPM() quando o fetch volta vazio) não casa com nenhuma faixa — é o
- * caminho de "sem dado", em que o OEM simplesmente não escreve nada na tela.
+ * Cor da bolinha de PM2.5, ou null para "sem dado".
  *
- * @return índice 0..5, ou -1 para sem dado / valor não numérico.
+ * Mesma varredura do MainFragment.bindLiveData$lambda-36 do OEM: o primeiro índice em
+ * que `valor > LIMITS[i]`. O último limite é -1 de propósito — um valor de -1, que é o
+ * default de getPM() quando o fetch volta vazio, não casa com nenhuma faixa e cai no
+ * "sem dado", em que o OEM também não escreve nada.
  */
-private fun pm25BandIndex(raw: String): Int {
-    val v = raw.toIntOrNull() ?: return -1
-    for (i in PM25_EXCHANGE.indices) if (v > PM25_EXCHANGE[i]) return i
-    return -1
+private fun pm25Color(raw: String): Color? {
+    val v = raw.toIntOrNull() ?: return null
+    for (i in PM25_LIMITS.indices) if (v > PM25_LIMITS[i]) return PM25_COLORS[i]
+    return null
 }
+
+/** Diâmetro da bolinha: casa com a altura do "22" de 22sp ao lado. */
+private val PM25_DOT = 12.dp
 
 private fun ClimateStateHolder.isOn(v: String) = v == "1"
 
@@ -377,15 +381,15 @@ private fun ReadoutColumn(cabin: String, outside: String, pm25: String, modifier
         Value("${deg(cabin)}  /  ${deg(outside)}")
         Spacer(Modifier.height(6.dp))
         Label("PM2.5")
-        val band = pm25BandIndex(pm25)
-        if (band < 0) {
+        val dot = pm25Color(pm25)
+        if (dot == null) {
             Value("--")
         } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    PM25_LABELS[band], fontSize = 22.sp, fontWeight = FontWeight.Light,
-                    color = PM25_COLORS[band],
-                )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Canvas(Modifier.size(PM25_DOT)) { drawCircle(dot) }
                 Value("$pm25 µg/m³")
             }
         }
