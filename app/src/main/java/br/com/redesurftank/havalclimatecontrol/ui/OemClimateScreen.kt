@@ -363,14 +363,26 @@ private fun Value(text: String) = Text(
     text, fontSize = 22.sp, fontWeight = FontWeight.Light, color = OemInk2, textAlign = TextAlign.End,
 )
 
+/**
+ * O OEM tem duas familias de banco com a mesma silhueta: `main_1..3` traz as ondas de
+ * calor (AQUECIMENTO) e `main_c1..c3` traz a ventoinha (VENTILACAO), as duas com a
+ * barra de tracos do nivel embaixo. A tela nasceu com a primeira, que e o controle
+ * errado — este botao escreve DRIVER_SEAT_VENT.
+ *
+ * O nivel 0 usa o asset de cadeira cheia, e nao o `_dis`: aquele tem alpha maximo de
+ * 51, que o [OemSeatIcon] ainda multiplica por 0,42 — na tela do carro nao dava para
+ * ver que havia um botao ali.
+ */
 private enum class SeatZone(val prop: String, val dim: Int, val levels: List<Int>) {
     DRIVER(
-        CarProps.DRIVER_SEAT_VENT, R.drawable.hvac_seat_main_0_dis,
-        listOf(R.drawable.hvac_seat_main_1, R.drawable.hvac_seat_main_2, R.drawable.hvac_seat_main_3),
+        CarProps.DRIVER_SEAT_VENT, R.drawable.hvac_seat_main_0,
+        listOf(R.drawable.hvac_seat_main_c1, R.drawable.hvac_seat_main_c2,
+               R.drawable.hvac_seat_main_c3),
     ),
     PASSENGER(
-        CarProps.PASSENGER_SEAT_VENT, R.drawable.hvac_seat_second_0_dis,
-        listOf(R.drawable.hvac_seat_second_1, R.drawable.hvac_seat_second_2, R.drawable.hvac_seat_second_3),
+        CarProps.PASSENGER_SEAT_VENT, R.drawable.hvac_seat_second_0,
+        listOf(R.drawable.hvac_seat_second_c1, R.drawable.hvac_seat_second_c2,
+               R.drawable.hvac_seat_second_c3),
     ),
 }
 
