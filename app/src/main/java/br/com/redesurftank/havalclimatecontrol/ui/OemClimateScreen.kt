@@ -324,15 +324,20 @@ fun OemClimateScreen(
                 modifier = Modifier.absoluteOffset(1147.dp, 524.dp),
             )
 
+            // Segundo botao com dois glifos, e aqui nem a cor muda: no OEM `hvac_exchange_in`
+            // (seta em U dentro do carro = recirculando) e `hvac_exchange_out` (seta entrando
+            // de fora = ar externo) JA vem os dois no azul #5A8BF3. Ou seja, o botao mostra
+            // qual modo esta ativo, e nao um estado ligado/desligado — por isso `on = true`
+            // fixo, que no [OemIcon] e o que da o azul cheio. Antes a tela tingia sempre o
+            // glifo de recirculacao, e no ar externo mostrava o desenho errado.
+            val freshAir = s.cycleMode == CYCLE_FRESH
             OemIcon(
-                R.drawable.hvac_exchange_in, s.cycleMode == CYCLE_FRESH,
-                contentDescription = "Troca de ar",
+                if (freshAir) R.drawable.hvac_exchange_out else R.drawable.hvac_exchange_in,
+                on = true,
+                contentDescription = if (freshAir) "Ar externo" else "Recirculação de ar",
                 modifier = Modifier.absoluteOffset(1293.dp, 524.dp),
             ) {
-                s.sendCommand(
-                    CarProps.CYCLE_MODE,
-                    if (s.cycleMode == CYCLE_FRESH) CYCLE_RECIRC else CYCLE_FRESH,
-                )
+                s.sendCommand(CarProps.CYCLE_MODE, if (freshAir) CYCLE_RECIRC else CYCLE_FRESH)
             }
 
             OemIcon(
