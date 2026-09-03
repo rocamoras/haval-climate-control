@@ -12,8 +12,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -39,8 +42,12 @@ val OemInk2     = Color(0x8FFFFFFF)   // .56
 val OemInk3     = Color(0x52FFFFFF)   // .32
 val OemInk4     = Color(0x66FFFFFF)   // .40
 val OemAccent   = Color(0xFF5A8BF3)
-val OemTrack    = Color(0x1AFFFFFF)   // .102 — fundo da seekbar
-val OemTrackFil = Color(0x295A8BF3)   // .16 do acento
+// Trilho e preenchimento da seekbar do ventilador, lidos do `seekbar_fans` do OEM
+// (layer-list: fundo sólido + clip de um gradiente). Os nomes são os de lá, e os valores
+// são os do conjunto `night` do arsc, que é o que a central usa.
+val OemTrack    = Color(0x1AFFFFFF)   // fans_seekbar_full — .10
+val OemFanProA  = Color(0xFF588CF5)   // fans_seekbar_pro — início, OPACO
+val OemFanProB  = Color(0xFF457FF5)   // fans_seekbar_pro_end — fim
 
 /**
  * Os drawables extraídos do OEM são máscaras: o estado ligado e o desligado têm alpha
@@ -230,9 +237,25 @@ fun OemTempScroll(
     }
 }
 
+// Geometria do SeekBar do OEM, tirada do `fragment_hvac_main`: layout_width 350,
+// layout_height 80 e **maxHeight 6**. Ou seja, a área de toque tem 80 de altura mas o
+// trilho desenhado tem 6 — a tela chegou a pintar os 80 como uma pílula de raio 40, que
+// e o dobro de tinta que o OEM usa. O knob (`hvac_fans_pop_slider`) tem 58 e sobra
+// FAN_INSET em cada ponta, o que dá 270 de curso.
+private val FAN_SEEK_W  = 350.dp
+private val FAN_SEEK_H  = 80.dp
+private val FAN_TRACK_H = 6.dp
+private val FAN_THUMB   = 58.dp
+private val FAN_INSET   = 11.dp
+private val FAN_TRAVEL  = FAN_SEEK_W - FAN_THUMB - FAN_INSET * 2   // 270.dp
+
 /**
- * Seekbar do ventilador (hvac_fans_seekbar). Toque e arraste caem no mesmo cálculo, e o
- * valor é arredondado para o inteiro mais próximo — o OEM não tem passo fracionário.
+ * Seekbar do ventilador (`seekbar_fans` do OEM). Toque e arraste caem no mesmo cálculo, e
+ * o valor é arredondado para o inteiro mais próximo — o OEM não tem passo fracionário.
+ *
+ * Não há marcas de passo: o `layer-list` do OEM tem só o fundo e o gradiente recortado.
+ * A tela desenhava um ponto por passo com um comentário dizendo que era "como no drawable
+ * do OEM", o que simplesmente não era verdade.
  */
 @Composable
 fun OemFanSeek(
@@ -242,15 +265,11 @@ fun OemFanSeek(
     thumbRes: Int,
     onChange: (Int) -> Unit,
 ) {
-    val width  = 350.dp
-    val height = 80.dp
-    val pct = if (max > 0) value.toFloat() / max else 0f
+    val pct = (if (max > 0) value.toFloat() / max else 0f).coerceIn(0f, 1f)
 
     Box(
         modifier = modifier
-            .size(width, height)
-            .clip(RoundedCornerShape(40.dp))
-            .background(OemTrack)
+            .size(FAN_SEEK_W, FAN_SEEK_H)
             .pointerInput(max) {
                 fun emit(x: Float) {
                     if (size.width <= 0) return
@@ -269,16 +288,25 @@ fun OemFanSeek(
                 }
             },
     ) {
-        Box(
-            Modifier.fillMaxHeight().fillMaxWidth(pct.coerceIn(0f, 1f)).background(OemTrackFil)
-        )
-        // Marcas: uma por passo, como no drawable do OEM.
-        Canvas(Modifier.fillMaxSize().padding(horizontal = 34.dp)) {
-            if (max <= 0) return@Canvas
-            val y = size.height / 2f
-            for (i in 0..max) {
-                val x = if (max == 0) 0f else size.width * i / max
-                drawCircle(Color(0x33FFFFFF), radius = 1.dp.toPx(), center = Offset(x, y))
+        Canvas(Modifier.fillMaxSize()) {
+            val h    = FAN_TRACK_H.toPx()
+            val top  = (size.height - h) / 2f
+            val edge = CornerRadius(h / 2f)
+            drawRoundRect(OemTrack, Offset(0f, top), Size(size.width, h), edge)
+
+            // O gradiente do OEM é definido sobre a barra INTEIRA e depois recortado no
+            // nível (`<clip><shape><gradient>`), e não esticado até o valor atual: em
+            // 3/7 aparece o começo do gradiente, não ele todo comprimido.
+            val fill = FAN_INSET.toPx() + FAN_THUMB.toPx() / 2f + pct * FAN_TRAVEL.toPx()
+            if (pct > 0f) {
+                drawRoundRect(
+                    brush = Brush.horizontalGradient(
+                        listOf(OemFanProA, OemFanProB), startX = 0f, endX = size.width,
+                    ),
+                    topLeft = Offset(0f, top),
+                    size = Size(fill, h),
+                    cornerRadius = edge,
+                )
             }
         }
         Image(
@@ -286,8 +314,8 @@ fun OemFanSeek(
             contentDescription = null,
             contentScale = ContentScale.Fit,
             modifier = Modifier
-                .padding(start = (11 + pct.coerceIn(0f, 1f) * 270).dp, top = 11.dp)
-                .size(58.dp),
+                .padding(start = FAN_INSET + FAN_TRAVEL * pct, top = FAN_INSET)
+                .size(FAN_THUMB),
         )
     }
 }

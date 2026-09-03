@@ -270,8 +270,10 @@ fun OemClimateScreen(
                 modifier = Modifier.absoluteOffset(842.dp, 452.dp).size(120.dp, 54.dp),
             ) {
                 Text("$fanValue", fontSize = 44.sp, fontWeight = FontWeight.ExtraLight, color = OemInk)
+                // fans_seekbar_word_second do OEM e 40% de branco (o numero cheio e 100%);
+                // estava em 32%, que e o tom dos vizinhos do seletor de temperatura.
                 Text(
-                    "/$fanMax", fontSize = 22.sp, fontWeight = FontWeight.ExtraLight, color = OemInk3,
+                    "/$fanMax", fontSize = 22.sp, fontWeight = FontWeight.ExtraLight, color = OemInk4,
                     modifier = Modifier.padding(top = 19.dp),
                 )
             }
