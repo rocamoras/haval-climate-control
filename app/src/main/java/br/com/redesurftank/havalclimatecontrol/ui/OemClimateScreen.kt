@@ -50,6 +50,26 @@ private val BLOWER_MODES = listOf(
 )
 
 /**
+ * Animação de vento por saída de ar, na mesma chave de bit do [BLOWER_MODES].
+ *
+ * O OEM tem um ImageView por saída (`hvacPicWindFace`, `hvacPicWindFoot`,
+ * `hvacPicWindDefrost`), cada um com sua própria flag de visibilidade — por isso uma
+ * combinação como rosto + pés toca as DUAS animações ao mesmo tempo, e não uma terceira
+ * arte combinada. Aqui é a mesma ideia.
+ *
+ * Só a variante branca entrou. No OEM a cor é escolhida em
+ * `MainFragment.animationBeginFace/Foot/Defrost` nesta ordem: ânion ligado → verde,
+ * fragrância → violeta, aquecimento → amarelo, nada disso → branco. Como o app não
+ * controla ânion nem fragrância, e a arte pesa ~0,4MB por modo, o branco cobre o caso
+ * real. As outras três estão no APK do OEM se algum dia fizerem falta.
+ */
+private val WIND_BY_BIT = listOf(
+    1 to R.drawable.hvac_wind_face,
+    2 to R.drawable.hvac_wind_foot,
+    4 to R.drawable.hvac_wind_win,
+)
+
+/**
  * Recirculação × ar externo (car.hvac.cycle_mode).
  *
  * NÃO é 0/1: o MainViewModel.exchangeClick do OEM compara com 1 e alterna entre 2 e 0,
@@ -135,6 +155,23 @@ fun OemClimateScreen(
                 contentScale = ContentScale.FillBounds,
                 modifier = Modifier.fillMaxSize().scale(scaleX = if (rightHandDrive) 1f else -1f, scaleY = 1f),
             )
+            // ── vento ─────────────────────────────────────────────────────────
+            // Fica sobre o render do carro e SOB as chapas e os ícones, como no OEM.
+            // 1150x630 centrado nos 1732 do frame: (1732 - 1150) / 2 = 291. O x saiu de
+            // centralizar, não do layout — o AXML é binário; a arte é simétrica e o
+            // render do carro é centrado, então é onde ela casa.
+            if (s.isOn(s.powerMode) && fanValue > 0) {
+                val outlets = intOf(s.blowerMode, 0)
+                WIND_BY_BIT.forEach { (bit, res) ->
+                    if (outlets and bit != 0) {
+                        OemWind(
+                            res,
+                            Modifier.absoluteOffset(291.dp, 0.dp).size(1150.dp, 630.dp),
+                        )
+                    }
+                }
+            }
+
             Plate(R.drawable.top_line, 406, 0, 920, 100)
             Plate(R.drawable.bg_toolbar_pop, 0, 516, 1732, 112)
 

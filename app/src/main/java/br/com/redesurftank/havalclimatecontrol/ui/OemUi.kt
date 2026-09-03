@@ -24,6 +24,11 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Text
+import android.graphics.ImageDecoder
+import android.graphics.drawable.AnimatedImageDrawable
+import android.widget.ImageView
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 
 // ─────────────────────────────────────────────────────────────
 // Paleta OEM (com.beantechs.hvac)
@@ -74,6 +79,41 @@ fun OemIcon(
             .pointerInput(enabled) {
                 if (enabled) detectTapGestures(onTap = { onClick() })
             },
+    )
+}
+
+/**
+ * Uma das animações de vento do OEM (WebP animado de 38 frames).
+ *
+ * Não entra como [Image]: o painter do Compose só desenha o primeiro frame de um WebP
+ * animado. Quem anima é o `AnimatedImageDrawable` do próprio Android — disponível desde
+ * a API 28, que e o minSdk deste app, então não custa dependência nenhuma. O ritmo vem
+ * do arquivo (40ms por frame, 1,52s de loop); o asset do OEM traz 0ms em todo frame e
+ * deixa o app decidir, e foi por isso que o reencode gravou a duração.
+ *
+ * FIT_XY porque o alvo tem exatamente a proporção do asset: esticar aqui não distorce.
+ */
+@Composable
+fun OemWind(resId: Int, modifier: Modifier = Modifier) {
+    val ctx = LocalContext.current
+    AndroidView(
+        modifier = modifier,
+        factory = { ImageView(it).apply { scaleType = ImageView.ScaleType.FIT_XY } },
+        update = { iv ->
+            // O update roda a cada recomposição; sem esta guarda a animação
+            // recomeçaria do frame 0 a cada mudança de estado da tela.
+            if (iv.tag != resId) {
+                iv.tag = resId
+                val d = ImageDecoder.decodeDrawable(
+                    ImageDecoder.createSource(ctx.resources, resId)
+                )
+                iv.setImageDrawable(d)
+                (d as? AnimatedImageDrawable)?.apply {
+                    repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
+                    start()
+                }
+            }
+        },
     )
 }
 
