@@ -74,6 +74,12 @@ public class FridaUtils {
 
     private static final Target[] ALL_TARGETS = { TARGET_SYSTEM_UI, TARGET_MEDIA_CENTER };
 
+    /**
+     * Sentinela que o script grava no proprio log quando as classes do alvo nao
+     * existem no processo em que ele foi injetado. Tem de casar com o texto do JS.
+     */
+    static final String WRONG_TARGET_MARK = "ALVO ERRADO";
+
     /** Teto de espera pelo fridaserver recem-iniciado. */
     private static final long SERVER_READY_TIMEOUT_MS = 2_500;
     private static final long SERVER_POLL_MS          = 100;
@@ -142,6 +148,16 @@ public class FridaUtils {
     /** Encerra o injetor da MediaCenter. Chamar só depois do restore do script. */
     public static String stopHomeCardInjection() {
         return stopTarget(TARGET_MEDIA_CENTER);
+    }
+
+    /**
+     * true se o script do card anunciou {@link #WRONG_TARGET_MARK} — injetado num
+     * processo que nao tem as classes do alvo. Le o log do injetor, que e truncado
+     * a cada injecao, entao nunca responde por uma tentativa antiga.
+     */
+    public static boolean homeCardWrongTarget() {
+        TargetStatus[] st = probe(TARGET_MEDIA_CENTER);
+        return st != null && st[0].wrongTarget;
     }
 
     public static boolean isHomeCardInjectionAlive() {
@@ -258,10 +274,25 @@ public class FridaUtils {
         return false;
     }
 
+    /**
+     * Snippet de shell que resolve o pid do alvo por nome EXATO de processo.
+     *
+     * Nao usar `grep ' <nome>'`: e prefixo, e o OEM tem tres pacotes que comecam
+     * igual — com.beantechs.mediacenter, .mediacenter.h5.core e .mediacenter.h5.ui.
+     * O `head -1` entao entregava o de menor pid, e em 2026-09-02 o injetor do card
+     * foi para o h5.core: todos os hooks morreram com ClassNotFoundException (as
+     * classes do card estao so no APK do .mediacenter), o card nunca apareceu, e o
+     * watchdog seguiu achando tudo bem porque o injetor ESTAVA vivo. `$NF` e o nome
+     * do processo no `ps -A` do toybox, e o `pidof` da reserva ja casa exato.
+     */
+    private static String pidSnippet(Target t) {
+        return "ps -A | awk '$NF == \"" + t.processName + "\" {print $2}' | head -1";
+    }
+
     /** pid atual do processo do alvo (vazio se não estiver rodando). */
     public static String pidOf(Target t) {
         String pid = ShizukuUtils.runCommandAndGetOutput(new String[]{"sh", "-c",
-                "ps -A | grep ' " + t.processName + "' | awk '{print $2}'"}).trim();
+                pidSnippet(t)}).trim();
         if (pid.contains("\n")) pid = pid.split("\n")[0].trim();
         if (pid.isEmpty())
             pid = ShizukuUtils.runCommandAndGetOutput(new String[]{"pidof", t.processName}).trim();
@@ -275,10 +306,16 @@ public class FridaUtils {
         public final String  pid;
         /** true se o processo injetor daquele alvo continua vivo. */
         public final boolean injectorAlive;
+        /**
+         * true se o script anunciou que caiu num processo sem as classes do alvo.
+         * Injetor vivo e injecao util sao coisas diferentes; so este campo separa.
+         */
+        public final boolean wrongTarget;
 
-        TargetStatus(String pid, boolean injectorAlive) {
+        TargetStatus(String pid, boolean injectorAlive, boolean wrongTarget) {
             this.pid           = pid;
             this.injectorAlive = injectorAlive;
+            this.wrongTarget   = wrongTarget;
         }
     }
 
@@ -306,13 +343,17 @@ public class FridaUtils {
         for (int i = 0; i < targets.length; i++) {
             Target t = targets[i];
             // Mesma heuristica do pidOf(): `ps -A` primeiro, `pidof` como reserva.
-            cmd.append("p=$(ps -A | grep ' ").append(t.processName)
-               .append("' | awk '{print $2}' | head -1); ")
+            cmd.append("p=$(").append(pidSnippet(t)).append("); ")
                .append("[ -z \"$p\" ] && p=$(pidof ").append(t.processName)
                .append(" | awk '{print $1}'); ")
                .append("pgrep -f '").append(t.pgrepPattern())
                .append("' >/dev/null 2>&1 && a=1 || a=0; ")
-               .append("echo \"").append(i).append(" ${p:--} $a\"; ");
+               // Injetor vivo nao significa injecao util: se o script caiu num processo
+               // sem as classes do alvo ele grava esta sentinela e desiste. Sem ler isso
+               // o watchdog declara saude para sempre (ver pidSnippet).
+               .append("grep -q '").append(WRONG_TARGET_MARK).append("' ")
+               .append(t.logPath()).append(" 2>/dev/null && w=1 || w=0; ")
+               .append("echo \"").append(i).append(" ${p:--} $a $w\"; ");
         }
 
         ShizukuUtils.ShellResult r = ShizukuUtils.run(new String[]{"sh", "-c", cmd.toString()});
@@ -325,11 +366,12 @@ public class FridaUtils {
         int filled = 0;
         for (String line : r.stdout.split("\n")) {
             String[] f = line.trim().split("\\s+");
-            if (f.length != 3) continue;
+            if (f.length != 4) continue;
             int idx;
             try { idx = Integer.parseInt(f[0]); } catch (NumberFormatException e) { continue; }
             if (idx < 0 || idx >= out.length || out[idx] != null) continue;
-            out[idx] = new TargetStatus("-".equals(f[1]) ? "" : f[1], "1".equals(f[2]));
+            out[idx] = new TargetStatus("-".equals(f[1]) ? "" : f[1],
+                    "1".equals(f[2]), "1".equals(f[3]));
             filled++;
         }
         // Resposta parcial e tao perigosa quanto nenhuma: melhor nao decidir nada.

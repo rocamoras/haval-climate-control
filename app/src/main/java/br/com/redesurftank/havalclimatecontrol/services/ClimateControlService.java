@@ -170,6 +170,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private volatile boolean homeCardBootstrapped = false;
     private volatile boolean homeCardInjected     = false;
     private String  injectedMediaCenterPid      = "";
+    /** pid onde a injecao do card ja falhou por falta das classes; "" se nenhum. */
+    private String  homeCardWrongPid            = "";
 
     // Watchdog unico dos dois alvos Frida, com intervalo adaptativo.
     private final Runnable injectionWatchdogRunnable = this::injectionWatchdogTick;
@@ -961,16 +963,35 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                     }
                 } else {
                     boolean restarted = !st.pid.isEmpty() && !st.pid.equals(injectedMediaCenterPid);
-                    if (restarted || !st.injectorAlive) {
-                        Log.w(TAG, "[homecard] watchdog re-injetando (restart=" + restarted + ")");
+                    // Injetor vivo no processo errado nao e saude: em 2026-09-02 o card
+                    // sumiu de vez porque o injetor foi para o com.beantechs.mediacenter
+                    // .h5.core e ninguem percebeu. Reinjetar so faz sentido se o pid
+                    // mudou desde a tentativa furada — no mesmo pid daria o mesmo erro
+                    // a cada tick, para sempre.
+                    boolean wrongPidIsNew = st.wrongTarget && !st.pid.equals(homeCardWrongPid);
+                    if (restarted || !st.injectorAlive || wrongPidIsNew) {
+                        Log.w(TAG, "[homecard] watchdog re-injetando (restart=" + restarted
+                                + " alvoErrado=" + st.wrongTarget + ")");
                         FridaUtils.startHomeCard();
                         injectedMediaCenterPid = FridaUtils.mediaCenterPid();
                         // Sem uma segunda ida ao shell so para confirmar: se a injecao
                         // nao pegou, o proximo tick (em 1s) descobre e tenta de novo.
                         homeCardInjected = !injectedMediaCenterPid.isEmpty();
+                        homeCardWrongPid = "";
                         changed = true;
+                    } else if (st.wrongTarget) {
+                        // Ja tentamos neste pid e o processo nao tem as classes. Fica no
+                        // ritmo lento e no log como NAO injetado, que e a verdade.
+                        if (!st.pid.equals(homeCardWrongPid)) {
+                            homeCardWrongPid = st.pid;
+                            PersistentLog.w(TAG, "[homecard] injecao caiu em processo sem as"
+                                    + " classes do card (pid " + st.pid + ") — ver ALVO ERRADO em "
+                                    + FridaUtils.TARGET_MEDIA_CENTER.logPath());
+                        }
+                        homeCardInjected = false;
                     } else {
                         homeCardInjected = true;
+                        homeCardWrongPid = "";
                     }
                 }
             }

@@ -201,7 +201,11 @@ object LogUploader {
             appendLine("systemui pid        : ${FridaUtils.systemUiPid()}")
             appendLine("systemui injetado   : ${FridaUtils.isInjectionAlive()}")
             appendLine("mediacenter pid     : ${FridaUtils.mediaCenterPid()}")
+            // "injetado" sozinho mentiu no log de 2026-09-02: o injetor estava vivo,
+            // mas dentro do .h5.core, sem nenhuma das classes do card. Diz as duas
+            // coisas — quem le precisa distinguir injetor vivo de injecao util.
             appendLine("mediacenter injetado: ${FridaUtils.isHomeCardInjectionAlive()}")
+            appendLine("mediacenter alvo ok : ${!FridaUtils.homeCardWrongTarget()}")
             appendLine("arquivo de controle : ${shell(arrayOf("cat", FridaUtils.HOME_CARD_CTRL_PATH))}")
             appendLine()
 
