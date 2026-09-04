@@ -530,6 +530,25 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 });
             };
 
+            ClimateStateHolder.INSTANCE.setOnUiVisibilityChange(visible ->
+                    backgroundHandler.post(() -> applyUiVisibility(visible)));
+
+            // Aplica o estado ATUAL, e nao so as mudancas: a Activity pode ter chamado
+            // setUiVisible(true) antes deste callback existir — o binder do Shizuku leva
+            // segundos no boot — e ai o servico acharia que a tela esta protegida sem que
+            // ninguem tenha desabilitado o pacote.
+            backgroundHandler.post(() -> {
+                if (ClimateStateHolder.INSTANCE.getUiVisible()) {
+                    applyUiVisibility(true);
+                } else if (!isHvacSuspended) {
+                    // Rede de seguranca: se o app morreu com o pacote desabilitado, o HVAC
+                    // do OEM ficaria inutilizavel para sempre. `pm enable` e idempotente,
+                    // custa um shell no start e limpa disable orfao de sessao anterior.
+                    ShizukuUtils.runCommandAndGetOutput(
+                            new String[]{"pm", "enable", HVAC_PACKAGE_NAME});
+                }
+            });
+
             // Configurações — Temperatura Externa Real (UI): registra callback UI → serviço.
             ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(enabled ->
                     backgroundHandler.post(() -> applyRealOutsideTemp(enabled)));
@@ -804,10 +823,67 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         });
     }
 
+    /**
+     * Escreve uma propriedade no veiculo.
+     *
+     * Por que existe supressao aqui: a barra de status do OEM reage a QUALQUER mudanca de
+     * propriedade abrindo o app de clima da central (`BeanStatusBarManager.handleValue` ->
+     * `AppUtils.startApp`), e ele roubaria o foco. Desabilitar o pacote faz esse
+     * startActivity falhar — os stack traces de `checkStartActivityResult` no logcat sao a
+     * protecao funcionando, nao um bug.
+     *
+     * Enquanto a NOSSA tela esta na frente o pacote ja fica desabilitado pela sessao toda
+     * (ver {@link #applyUiVisibility}), e aqui nao se paga nada. O ciclo por escrita ficou
+     * so para o caminho automatico — histerese, curva de conforto, ventilacao dos bancos —
+     * que roda com a tela fora e onde o app do OEM pularia na cara do motorista.
+     */
     private void sendHvacCommand(String key, String value) throws Exception {
-        ensureHvacSuspended(key);
+        boolean uiInFront = ClimateStateHolder.INSTANCE.getUiVisible();
+        if (!uiInFront) ensureHvacSuspended(key);
         controlService.request("cmd.common.request.set", key, value);
-        scheduleHvacResumption();
+        if (!uiInFront) scheduleHvacResumption();
+    }
+
+    /**
+     * Liga/desliga a supressao do HVAC do OEM conforme a nossa Activity aparece e sai.
+     *
+     * Um `pm disable-user` + `am force-stop` por sessao no lugar de um por escrita. No log
+     * de 04/09 foram 5 ciclos em 7s de interacao, cada um custando um `dumpsys activity`,
+     * duas operacoes de `pm` (que reescrevem estado e disparam PACKAGE_CHANGED para todo
+     * mundo) e 150ms de sleep. Roda no backgroundHandler.
+     */
+    private void applyUiVisibility(boolean visible) {
+        if (visible) {
+            // Sem o `dumpsys` do ensureHvacSuspended: se a NOSSA Activity acabou de entrar
+            // em foco, o app do OEM nao pode estar em foreground.
+            if (resumeHvacRunnable != null) {
+                backgroundHandler.removeCallbacks(resumeHvacRunnable);
+                resumeHvacRunnable = null;
+            }
+            if (!isHvacSuspended) {
+                Log.w(TAG, "Tela do app em foco — suspendendo HVAC do OEM pela sessao");
+                suspendHvacNow();
+            }
+        } else if (isHvacSuspended) {
+            Log.w(TAG, "Tela do app saiu — reabilitando HVAC do OEM");
+            resumeHvacNow();
+        }
+    }
+
+    private void suspendHvacNow() {
+        ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "disable-user", "--user", "0", HVAC_PACKAGE_NAME});
+        ShizukuUtils.runCommandAndGetOutput(new String[]{"am", "force-stop", HVAC_PACKAGE_NAME});
+        isHvacSuspended = true;
+        SystemClock.sleep(150);
+    }
+
+    private void resumeHvacNow() {
+        if (resumeHvacRunnable != null) {
+            backgroundHandler.removeCallbacks(resumeHvacRunnable);
+            resumeHvacRunnable = null;
+        }
+        ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "enable", HVAC_PACKAGE_NAME});
+        isHvacSuspended = false;
     }
 
     private void ensureHvacSuspended(String triggerKey) {
@@ -821,10 +897,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 return;
             }
             Log.w(TAG, "Suspendendo HVAC app para: " + triggerKey);
-            ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "disable-user", "--user", "0", HVAC_PACKAGE_NAME});
-            ShizukuUtils.runCommandAndGetOutput(new String[]{"am", "force-stop", HVAC_PACKAGE_NAME});
-            isHvacSuspended = true;
-            SystemClock.sleep(150);
+            suspendHvacNow();
         }
     }
 
@@ -846,6 +919,12 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             backgroundHandler.removeCallbacks(resumeHvacRunnable);
         }
         resumeHvacRunnable = () -> {
+            // A tela pode ter entrado em foco no meio da janela: ai a supressao passa a
+            // ser da sessao e nao ha o que reabilitar.
+            if (ClimateStateHolder.INSTANCE.getUiVisible()) {
+                resumeHvacRunnable = null;
+                return;
+            }
             Log.w(TAG, "Reabilitando HVAC app");
             ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "enable", HVAC_PACKAGE_NAME});
             isHvacSuspended = false;

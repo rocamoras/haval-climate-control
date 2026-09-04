@@ -124,6 +124,20 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    // O serviço usa isto para desabilitar o HVAC do OEM uma vez por sessão, em vez de
+    // uma vez por escrita. onStart/onStop e não onResume/onPause: um diálogo por cima
+    // pausa a Activity sem que a nossa tela saia da frente, e reabilitar o app do OEM
+    // ali dentro só devolveria o roubo de foco no meio da interação.
+    override fun onStart() {
+        super.onStart()
+        ClimateStateHolder.setUiVisible(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        ClimateStateHolder.setUiVisible(false)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────

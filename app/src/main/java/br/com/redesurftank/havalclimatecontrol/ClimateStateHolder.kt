@@ -106,6 +106,25 @@ object ClimateStateHolder {
     @Volatile var onRealOutsideTempToggle: ToggleCallback? = null
     @Volatile var onHomeCardToggle: ToggleCallback? = null
 
+    /**
+     * Avisa o serviço quando a nossa Activity entra e sai de foco.
+     *
+     * Serve para o serviço manter o HVAC do OEM desabilitado durante a sessão inteira,
+     * em vez de desabilitar e reabilitar a cada escrita: enquanto a nossa tela está na
+     * frente, é ela que precisa de proteção contra o app do OEM roubar o foco.
+     */
+    @Volatile var onUiVisibilityChange: ToggleCallback? = null
+
+    /** Espelho do último estado enviado, para o serviço decidir sem consultar a UI. */
+    @Volatile var uiVisible: Boolean = false
+        private set
+
+    fun setUiVisible(visible: Boolean) {
+        if (uiVisible == visible) return
+        uiVisible = visible
+        onUiVisibilityChange?.onToggle(visible)
+    }
+
     // Callbacks invocados pelo serviço (via mainHandler) quando uma mudança externa é detectada
     @Volatile var onExternalVentChange:    ((String) -> Unit)? = null
     @Volatile var onExternalComfortChange: ((String) -> Unit)? = null
