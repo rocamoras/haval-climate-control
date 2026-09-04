@@ -32,6 +32,9 @@ private const val FRAME_LEFT = 30
 private const val FRAME_W    = 1732
 private const val FRAME_H    = 628
 
+/** `dimen/animation_view_width` do OEM: a largura das tres ImageViews de vento. */
+private const val WIND_W     = 1150
+
 /**
  * Distribuição de ar (car.hvac.blower_mode) — tratada como BITMASK de saídas.
  *
@@ -174,7 +177,14 @@ fun OemClimateScreen(
                 val bits = WIND_BY_BIT.filter { (bit, _) -> outlets and bit != 0 }
                     .ifEmpty { WIND_BY_BIT.take(1) }
                 bits.forEach { (_, res) ->
-                    OemWind(res, Modifier.absoluteOffset(291.dp, 0.dp).size(1150.dp, 630.dp))
+                    // O OEM da 1150 de largura, centrada na tela, e altura cheia da raiz
+                    // (`animation_view_width` + match_parent + layout_centerHorizontal no
+                    // `hvac_pic_defrost_style`). 1150 centrado em 1792 cai em x=321, que
+                    // e o 291 daqui somado ao x=30 do frame.
+                    OemWind(
+                        res, WIND_W.dp, FRAME_H.dp,
+                        Modifier.absoluteOffset(((FRAME_W - WIND_W) / 2).dp, 0.dp),
+                    )
                 }
             }
 

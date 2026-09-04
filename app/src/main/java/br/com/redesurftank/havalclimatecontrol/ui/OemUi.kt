@@ -33,8 +33,10 @@ import android.graphics.ImageDecoder
 import android.graphics.drawable.Drawable
 import android.util.Log
 import android.graphics.drawable.AnimatedImageDrawable
+import android.view.ViewGroup
 import android.widget.ImageView
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -104,23 +106,45 @@ fun OemIcon(
  * do arquivo (40ms por frame, 1,52s de loop); o asset do OEM traz 0ms em todo frame e
  * deixa o app decidir, e foi por isso que o reencode gravou a duração.
  *
- * FIT_XY porque o alvo tem exatamente a proporção do asset: esticar aqui não distorce.
+ * O tamanho vai no DECODE, via `setTargetSize`, e não no scaleType. Na foto do carro de
+ * 04/09 a arte apareceu no tamanho nativo do arquivo (575x315) ancorada no canto, com os
+ * jatos batendo na fileira de ícones em vez da linha do painel: medindo o asset, a tinta
+ * ocupa 49%..69% da altura, e a posição só fecha se a altura desenhada tiver sido ~315 e
+ * não ~628. Com o alvo decidido no decode, o drawable já nasce do tamanho da caixa, o
+ * scaleType deixa de importar e ainda desaparece o upscale por frame.
  */
 @Composable
-fun OemWind(resId: Int, modifier: Modifier = Modifier) {
+fun OemWind(resId: Int, width: Dp, height: Dp, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
+    val targetW: Int
+    val targetH: Int
+    with(LocalDensity.current) {
+        targetW = width.roundToPx()
+        targetH = height.roundToPx()
+    }
     // Fora da main thread: `decodeDrawable` de um WebP animado de 38 frames faz trabalho
     // sincrono, e no `update` do AndroidView isso caía direto no thread da UI.
-    val anim by produceState<Drawable?>(null, resId) {
+    val anim by produceState<Drawable?>(null, resId, targetW, targetH) {
         value = withContext(Dispatchers.IO) {
             runCatching {
-                ImageDecoder.decodeDrawable(ImageDecoder.createSource(ctx.resources, resId))
+                ImageDecoder.decodeDrawable(
+                    ImageDecoder.createSource(ctx.resources, resId)
+                ) { decoder, _, _ -> decoder.setTargetSize(targetW, targetH) }
             }.onFailure { Log.e("OemWind", "falha ao decodificar $resId", it) }.getOrNull()
         }
     }
     AndroidView(
-        modifier = modifier,
-        factory = { ImageView(it).apply { scaleType = ImageView.ScaleType.FIT_XY } },
+        modifier = modifier.size(width, height),
+        factory = {
+            ImageView(it).apply {
+                scaleType = ImageView.ScaleType.FIT_XY
+                // MATCH_PARENT explicito: com WRAP_CONTENT o ImageView pode se resolver
+                // pelo tamanho intrinseco do drawable em vez do tamanho da caixa.
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+            }
+        },
         update = { iv ->
             // O update roda a cada recomposição; sem esta guarda a animação
             // recomeçaria do frame 0 a cada mudança de estado da tela. start() fica aqui
