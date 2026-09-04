@@ -94,7 +94,15 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final long   HOME_CARD_RETRY_MS    = 1_000;
     // Janela para o script restaurar a fileira original antes de matarmos o injetor.
     private static final long   HOME_CARD_RESTORE_MS  = 3_000;
-    private static final long   HVAC_RESUME_DELAY_MS = 300;
+    // Janela em que o HVAC do OEM fica desabilitado depois de uma escrita. Cada ciclo
+    // custa um `dumpsys activity`, um `pm disable-user`, um `am force-stop`, 150ms de
+    // sleep e depois um `pm enable` — e o `pm` reescreve estado e dispara
+    // PACKAGE_CHANGED para todo mundo. Com 300ms, mexer na tela por alguns segundos
+    // virava um ciclo por toque: no log de 04/09 sao 5 ciclos em 7s, e a barra de status
+    // do OEM respondeu a cada um tentando abrir o app desabilitado — 197 stack traces em
+    // 12 minutos, no thread principal do SystemUI. Com a janela maior, uma rajada de
+    // toques suspende UMA vez e reabilita no fim.
+    private static final long   HVAC_RESUME_DELAY_MS = 2_500;
     private static final long   EVAL_DEBOUNCE_MS     = 50;     // coalesce bursts de onDataChanged numa única avaliação
     private static final long   IPTABLES_REFRESH_MS  = 60_000; // re-assert da regra iptables (idempotente, antes 15s)
     private static final long   BOOTSTRAP_BACKOFF_MAX_MS = 30_000;

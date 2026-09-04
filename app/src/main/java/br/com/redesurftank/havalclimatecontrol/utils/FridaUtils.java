@@ -351,8 +351,14 @@ public class FridaUtils {
                // Injetor vivo nao significa injecao util: se o script caiu num processo
                // sem as classes do alvo ele grava esta sentinela e desiste. Sem ler isso
                // o watchdog declara saude para sempre (ver pidSnippet).
-               .append("grep -q '").append(WRONG_TARGET_MARK).append("' ")
-               .append(t.logPath()).append(" 2>/dev/null && w=1 || w=0; ")
+               // `tail -c` antes do grep: sem match o grep leria o arquivo INTEIRO, e o
+               // log do card cresce sem limite (o script escreve a cada 1,5s). A sentinela,
+               // quando existe, e escrita no comeco da injecao e o arquivo e truncado a
+               // cada injecao nova — mas o tail cobre o caso do arquivo ja ter crescido.
+               .append("{ head -c 4000 ").append(t.logPath())
+               .append("; tail -c 4000 ").append(t.logPath())
+               .append("; } 2>/dev/null | grep -q '").append(WRONG_TARGET_MARK)
+               .append("' && w=1 || w=0; ")
                .append("echo \"").append(i).append(" ${p:--} $a $w\"; ");
         }
 

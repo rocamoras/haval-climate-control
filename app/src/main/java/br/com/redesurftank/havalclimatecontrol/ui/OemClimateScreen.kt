@@ -165,14 +165,16 @@ fun OemClimateScreen(
             // centralizar, não do layout — o AXML é binário; a arte é simétrica e o
             // render do carro é centrado, então é onde ela casa.
             if (s.isOn(s.powerMode) && fanValue > 0) {
+                // O blower_mode e uma hipotese nao confirmada no carro, e no log de
+                // 04/09 nao havia UMA leitura dele: `blowerMode` continuava "--", o
+                // intOf caía em 0, nenhum bit casava e a animacao nunca aparecia. Sem
+                // valor utilizavel, o rosto e o palpite certo — e o padrao do OEM ao
+                // ligar. O log agora imprime a propriedade para fechar essa conta.
                 val outlets = intOf(s.blowerMode, 0)
-                WIND_BY_BIT.forEach { (bit, res) ->
-                    if (outlets and bit != 0) {
-                        OemWind(
-                            res,
-                            Modifier.absoluteOffset(291.dp, 0.dp).size(1150.dp, 630.dp),
-                        )
-                    }
+                val bits = WIND_BY_BIT.filter { (bit, _) -> outlets and bit != 0 }
+                    .ifEmpty { WIND_BY_BIT.take(1) }
+                bits.forEach { (_, res) ->
+                    OemWind(res, Modifier.absoluteOffset(291.dp, 0.dp).size(1150.dp, 630.dp))
                 }
             }
 

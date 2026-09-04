@@ -185,6 +185,12 @@ object LogUploader {
             appendLine("auto_enable         : ${state.autoEnable}")
             appendLine("ac_enable           : ${state.acEnable}")
             appendLine("pm2.5               : ${state.pm25Value}")
+            // Sem estes quatro o log de 04/09 nao respondeu por que a animacao de vento
+            // nao apareceu: ela depende do blower_mode, que ninguem imprimia.
+            appendLine("blower_mode         : ${state.blowerMode}")
+            appendLine("cycle_mode          : ${state.cycleMode}")
+            appendLine("fan_speed           : ${state.fanSpeed}")
+            appendLine("fan_speed_range     : ${state.fanSpeedRange}")
             appendLine("vent motorista      : ${state.driverSeatVentLevel}")
             appendLine("vent passageiro     : ${state.passengerSeatVentLevel}")
             appendLine("modo conforto       : ${state.comfortMode}")

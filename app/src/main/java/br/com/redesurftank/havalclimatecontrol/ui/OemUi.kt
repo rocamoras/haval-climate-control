@@ -8,6 +8,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -28,10 +30,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Text
 import android.graphics.ImageDecoder
+import android.graphics.drawable.Drawable
+import android.util.Log
 import android.graphics.drawable.AnimatedImageDrawable
 import android.widget.ImageView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 // ─────────────────────────────────────────────────────────────
 // Paleta OEM (com.beantechs.hvac)
@@ -103,19 +109,25 @@ fun OemIcon(
 @Composable
 fun OemWind(resId: Int, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
+    // Fora da main thread: `decodeDrawable` de um WebP animado de 38 frames faz trabalho
+    // sincrono, e no `update` do AndroidView isso caía direto no thread da UI.
+    val anim by produceState<Drawable?>(null, resId) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                ImageDecoder.decodeDrawable(ImageDecoder.createSource(ctx.resources, resId))
+            }.onFailure { Log.e("OemWind", "falha ao decodificar $resId", it) }.getOrNull()
+        }
+    }
     AndroidView(
         modifier = modifier,
         factory = { ImageView(it).apply { scaleType = ImageView.ScaleType.FIT_XY } },
         update = { iv ->
             // O update roda a cada recomposição; sem esta guarda a animação
-            // recomeçaria do frame 0 a cada mudança de estado da tela.
-            if (iv.tag != resId) {
-                iv.tag = resId
-                val d = ImageDecoder.decodeDrawable(
-                    ImageDecoder.createSource(ctx.resources, resId)
-                )
-                iv.setImageDrawable(d)
-                (d as? AnimatedImageDrawable)?.apply {
+            // recomeçaria do frame 0 a cada mudança de estado da tela. start() fica aqui
+            // de proposito: o drawable precisa ser ligado no thread que o desenha.
+            if (iv.drawable !== anim) {
+                iv.setImageDrawable(anim)
+                (anim as? AnimatedImageDrawable)?.apply {
                     repeatCount = AnimatedImageDrawable.REPEAT_INFINITE
                     start()
                 }
