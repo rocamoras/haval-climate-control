@@ -275,10 +275,19 @@ fun OemClimateScreen(
                 modifier = Modifier.absoluteOffset(283.dp, 438.dp),
             ) {
                 val turningOn = !syncOn
+                // Igualar ANTES de ligar o flag, e escrever os DOIS lados.
+                //
+                // O OEM tem um `setTempSync` separado que grava `driver_temperature` e
+                // `pass_temperature` juntos, e o `setSync` so cuida do flag. A tela fazia
+                // o inverso — ligava o flag e so depois copiava a temperatura para o
+                // passageiro — e o carro pode estar recusando o flag enquanto as duas
+                // zonas divergem. E hipotese, nao medicao: nenhum log ate hoje tem uma
+                // escrita de `sync_enable = 1` para comparar.
+                if (turningOn) {
+                    s.sendCommand(CarProps.DRIVER_TEMP, s.driverTemp)
+                    s.sendCommand(CarProps.PASS_TEMP, s.driverTemp)
+                }
                 s.sendCommand(CarProps.SYNC_ENABLE, if (turningOn) "1" else "0")
-                // Ao ligar, o passageiro assume a temperatura do motorista — é o que o
-                // OEM faz, e sem isso os dois lados ficariam "sincronizados" divergentes.
-                if (turningOn) s.sendCommand(CarProps.PASS_TEMP, s.driverTemp)
             }
 
             // ── ventilador ────────────────────────────────────────────────────
