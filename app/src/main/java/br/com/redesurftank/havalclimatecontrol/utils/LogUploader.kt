@@ -2,6 +2,7 @@ package br.com.redesurftank.havalclimatecontrol.utils
 
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import br.com.redesurftank.havalclimatecontrol.ClimateStateHolder
 import org.json.JSONObject
@@ -179,11 +180,19 @@ object LogUploader {
             appendLine("conectado           : ${state.vehicleConnected}")
             appendLine("temp interna        : ${state.insideTemp}")
             appendLine("temp externa        : ${state.outsideTemp}")
-            appendLine("temp setada         : ${state.driverTemp}")
+            appendLine("temp motorista      : ${state.driverTemp}")
+            appendLine("temp passageiro     : ${state.passengerTemp}")
+            appendLine("sync_enable         : ${state.syncEnable}")
             appendLine("power_mode          : ${state.powerMode}")
             appendLine("auto_enable         : ${state.autoEnable}")
             appendLine("ac_enable           : ${state.acEnable}")
             appendLine("pm2.5               : ${state.pm25Value}")
+            // Sem estes quatro o log de 04/09 nao respondeu por que a animacao de vento
+            // nao apareceu: ela depende do blower_mode, que ninguem imprimia.
+            appendLine("blower_mode         : ${state.blowerMode}")
+            appendLine("cycle_mode          : ${state.cycleMode}")
+            appendLine("fan_speed           : ${state.fanSpeed}")
+            appendLine("fan_speed_range     : ${state.fanSpeedRange}")
             appendLine("vent motorista      : ${state.driverSeatVentLevel}")
             appendLine("vent passageiro     : ${state.passengerSeatVentLevel}")
             appendLine("modo conforto       : ${state.comfortMode}")
@@ -200,7 +209,11 @@ object LogUploader {
             appendLine("systemui pid        : ${FridaUtils.systemUiPid()}")
             appendLine("systemui injetado   : ${FridaUtils.isInjectionAlive()}")
             appendLine("mediacenter pid     : ${FridaUtils.mediaCenterPid()}")
+            // "injetado" sozinho mentiu no log de 2026-09-02: o injetor estava vivo,
+            // mas dentro do .h5.core, sem nenhuma das classes do card. Diz as duas
+            // coisas — quem le precisa distinguir injetor vivo de injecao util.
             appendLine("mediacenter injetado: ${FridaUtils.isHomeCardInjectionAlive()}")
+            appendLine("mediacenter alvo ok : ${!FridaUtils.homeCardWrongTarget()}")
             appendLine("arquivo de controle : ${shell(arrayOf("cat", FridaUtils.HOME_CARD_CTRL_PATH))}")
             appendLine()
 
@@ -313,9 +326,19 @@ object LogUploader {
         // de boot (SYSTEM_BOOT, e 5-7 system_app_wtf do power controller do OEM por
         // boot), e num arquivo real elas afogaram o único system_app_anr que
         // interessava. Ordena por interesse, e só depois por recência.
+        //
+        // Mas só interesse também falhou: em 2026-09-02 o framework fez um soft reboot
+        // (SYSTEM_RESTART, prioridade 4) e as três vagas foram para system_server_crash
+        // de dois dias antes — o único registro do evento do dia ficou fechado. Por isso
+        // o que é deste boot passa na frente, e o interesse desempata dentro de cada
+        // grupo. O ruído de boot (SYSTEM_BOOT, system_app_wtf) já saiu no filtro de rank.
+        val bootStartMs = System.currentTimeMillis() - SystemClock.elapsedRealtime()
         val toOpen = hits
             .filter { dropboxRank(it) <= DROPBOX_OPEN_MAX_RANK }
-            .sortedWith(compareBy({ dropboxRank(it) }, { -dropboxStamp(it) }))
+            .sortedWith(compareBy(
+                { if (dropboxStamp(it) >= bootStartMs) 0 else 1 },
+                { dropboxRank(it) },
+                { -dropboxStamp(it) }))
             .take(DROPBOX_MAX_ENTRIES)
 
         return buildString {

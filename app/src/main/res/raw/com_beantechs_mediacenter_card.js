@@ -58,6 +58,21 @@ Java.perform(function () {
     var CP_CARD  = 590;          // CP virtual: precisa cair em 501..600 p/ o onClick do OEM
     var ROW_TOP  = 100;          // topMargin da fileira com o titulo escondido
 
+    // ── o processo e o certo? ───────────────────────────────────────────────
+    // O OEM tem tres pacotes com prefixo com.beantechs.mediacenter (.h5.core e
+    // .h5.ui sao os outros dois) e as classes do card vivem SO no primeiro. Cair
+    // num dos outros deixava todos os hooks em ClassNotFoundException e o tick
+    // repetindo o erro para sempre (860 linhas em 45min no log de 2026-09-02),
+    // enquanto o app via o injetor vivo e dava a injecao por boa. Agora avisa e
+    // desiste: o watchdog le esta linha e reinjeta no processo certo.
+    try {
+        Java.use(ACT);
+    } catch (e) {
+        log("ALVO ERRADO: " + ACT + " nao existe neste processo (h5.core/h5.ui?)"
+            + " — nada a fazer aqui: " + e);
+        return;
+    }
+
     // ── wrappers ───────────────────────────────────────────────────────────
     // Regra do handoff §3: instância de Java.choose expõe só os métodos da
     // própria classe. Todo método herdado (findViewById, setVisibility, ...)
