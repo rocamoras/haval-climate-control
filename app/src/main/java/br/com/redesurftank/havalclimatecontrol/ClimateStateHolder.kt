@@ -1,9 +1,11 @@
 package br.com.redesurftank.havalclimatecontrol
 
+import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import java.util.concurrent.ConcurrentHashMap
 import br.com.redesurftank.havalclimatecontrol.utils.PersistentLog
 
 object ClimateStateHolder {
@@ -155,7 +157,37 @@ object ClimateStateHolder {
 
     @JvmField @Volatile var commandCallback: CommandCallback? = null
 
+    /**
+     * Valor que a UI pediu e o carro ainda nao confirmou.
+     *
+     * A tela espelha o que o VEICULO reporta, e entre o clique e a confirmacao o carro
+     * continua devolvendo o valor antigo. No log de 05/09 isso apareceu inteiro: doze
+     * escritas de `passenger_seat_ventilation_level = 1` em 5,5s, todas do mesmo valor,
+     * porque o nivel exibido voltava a 0 entre um clique e outro e o ciclo recomecava do
+     * zero. Enquanto o pedido esta pendente a tela mostra o que foi pedido, e o proximo
+     * clique parte dali — que e o que faz 0→1→2→3 funcionar.
+     */
+    private class Pending(val value: String, val atMs: Long)
+
+    private val pending = ConcurrentHashMap<String, Pending>()
+
+    /**
+     * Ate quando insistir no valor pedido. Curto o bastante para a tela nao mentir se o
+     * carro recusar (ventilacao de banco depende de condicoes que ele nao conta), e longo
+     * o bastante para cobrir a escrita, que no log levou de 0,2s a 2,1s dependendo da fila.
+     */
+    private const val PENDING_TTL_MS = 4_000L
+
+    /** Ultimo espelho recebido, para reaplicar na hora do clique sem esperar o servico. */
+    private var lastCache: Map<String, String?> = emptyMap()
+    private var lastConnected = false
+
     fun sendCommand(key: String, value: String) {
+        pending[key] = Pending(value, SystemClock.elapsedRealtime())
+        // Reaplica o espelho JA com o pendente: sem isto a tela so mudaria quando a
+        // escrita voltasse, e e nessa janela que o usuario clica de novo. Só depois do
+        // primeiro espelho: com o cache vazio isto marcaria o veiculo como desconectado.
+        if (lastCache.isNotEmpty()) updateFromCache(lastConnected, lastCache)
         commandCallback?.onCommand(key, value)
     }
 
@@ -167,7 +199,22 @@ object ClimateStateHolder {
      * silencioso que só aparece na tela. Aqui a associação é pela chave.
      */
     fun updateFromCache(connected: Boolean, cache: Map<String, String?>) {
-        fun v(key: String) = cache[key] ?: "--"
+        lastCache = cache
+        lastConnected = connected
+
+        fun v(key: String): String {
+            val p = pending[key]
+            if (p != null) {
+                when {
+                    // O carro confirmou: o pendente cumpriu o papel e sai.
+                    cache[key] == p.value -> pending.remove(key)
+                    // Estourou a janela: melhor mostrar a verdade do carro do que insistir.
+                    SystemClock.elapsedRealtime() - p.atMs > PENDING_TTL_MS -> pending.remove(key)
+                    else -> return p.value
+                }
+            }
+            return cache[key] ?: "--"
+        }
 
         vehicleConnected = connected
 
@@ -216,7 +263,12 @@ object ClimateStateHolder {
     }
 
     /** Serviço caiu ou desconectou: tudo volta para "--" e o indicador de conexão apaga. */
-    fun clearVehicleData() = updateFromCache(false, emptyMap())
+    fun clearVehicleData() {
+        // Os pendentes tambem: sem carro nao ha o que confirmar, e insistir neles deixaria
+        // a tela mostrando valor de veiculo desconectado.
+        pending.clear()
+        updateFromCache(false, emptyMap())
+    }
 
     /** A lista em memória é só o que a tela mostra; o espelho em disco é o que
      *  sobrevive a um reinício e permite reconstruir o que o app fez antes de cair. */
