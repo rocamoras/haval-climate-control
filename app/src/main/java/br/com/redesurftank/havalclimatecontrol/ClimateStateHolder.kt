@@ -10,6 +10,8 @@ import br.com.redesurftank.havalclimatecontrol.utils.PersistentLog
 
 object ClimateStateHolder {
 
+    private const val TAG = "ClimateStateHolder"
+
     var vehicleConnected      by mutableStateOf(false)
     var autoControlEnabled    by mutableStateOf(true)
     var autoEnable       by mutableStateOf("--")
@@ -183,6 +185,11 @@ object ClimateStateHolder {
     private var lastConnected = false
 
     fun sendCommand(key: String, value: String) {
+        // No log de 05/09 a tela ficou 8s em foco, o usuario clicou no banco e NAO saiu
+        // comando nenhum — nem escrita, nem erro. Sem esta linha nao da para separar
+        // "o clique nao chegou" de "chegou e o servico engoliu".
+        PersistentLog.w(TAG, "UI pediu " + key + " = " + value +
+                (if (commandCallback == null) " — SEM callback do servico!" else ""))
         pending[key] = Pending(value, SystemClock.elapsedRealtime())
         // Reaplica o espelho JA com o pendente: sem isto a tela so mudaria quando a
         // escrita voltasse, e e nessa janela que o usuario clica de novo. Só depois do
@@ -205,13 +212,14 @@ object ClimateStateHolder {
         fun v(key: String): String {
             val p = pending[key]
             if (p != null) {
-                when {
-                    // O carro confirmou: o pendente cumpriu o papel e sai.
-                    cache[key] == p.value -> pending.remove(key)
-                    // Estourou a janela: melhor mostrar a verdade do carro do que insistir.
-                    SystemClock.elapsedRealtime() - p.atMs > PENDING_TTL_MS -> pending.remove(key)
-                    else -> return p.value
-                }
+                // SO por tempo. Antes o pendente tambem saía quando o cache batia com o
+                // valor pedido — mas quem poe esse valor no cache e o proprio servico,
+                // logo depois da escrita, antes de o carro dizer qualquer coisa. O
+                // pendente era confirmado pelo nosso proprio eco, o carro reportava o
+                // valor antigo em seguida e a tela voltava atras: era isso que fazia o
+                // ciclo do banco recomecar do zero a cada clique.
+                if (SystemClock.elapsedRealtime() - p.atMs <= PENDING_TTL_MS) return p.value
+                pending.remove(key)
             }
             return cache[key] ?: "--"
         }

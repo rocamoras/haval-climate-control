@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.sp
 import br.com.redesurftank.havalclimatecontrol.CarProps
 import br.com.redesurftank.havalclimatecontrol.ClimateStateHolder
 import br.com.redesurftank.havalclimatecontrol.R
+import br.com.redesurftank.havalclimatecontrol.utils.PersistentLog
 
 // ─────────────────────────────────────────────────────────────
 // Geometria — medida do com.beantechs.hvac (_O.xml)
@@ -469,6 +470,19 @@ private fun SeatVent(
             (if (zone == SeatZone.DRIVER) "motorista" else "passageiro") +
             (if (auto) " (automático)" else " ($level/3)"),
     ) {
+        // O que o botao VIU ao ser tocado. Sem isto, um log sem comando nenhum nao diz se
+        // o toque nao chegou, se caiu no ramo do AUTO (que nao escreve) ou se o nivel lido
+        // era outro. `raw` e o valor cru da propriedade, antes do intOf.
+        val raw = if (zone == SeatZone.DRIVER) s.driverSeatVentLevel else s.passengerSeatVentLevel
+        val decision = when {
+            auto       -> "estava AUTO → desliga AUTO e manda 0"
+            level >= 3 -> "nivel 3 → entra em AUTO (sem escrita)"
+            else       -> "manda ${level + 1}"
+        }
+        PersistentLog.w(
+            "SeatVent",
+            "clique ${zone.name}: auto=$auto nivel=$level raw='$raw' → $decision",
+        )
         if (auto) {
             onSeatVentAuto(false)
             s.sendCommand(zone.prop, "0")

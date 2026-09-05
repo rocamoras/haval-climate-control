@@ -36,7 +36,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 import br.com.redesurftank.havalclimatecontrol.App;
@@ -162,14 +161,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private IIntelligentVehicleControlService controlService;
     private final Map<String, String> dataCache = new HashMap<>();
-    /**
-     * Ultimo valor pedido por chave que ainda nao terminou de ser escrito.
-     *
-     * Concorrente de proposito: escrito na UI (no clique) e limpo na backgroundHandler.
-     * Nao da para usar o {@link #dataCache} para isso — ele e um HashMap simples, mutado
-     * na thread de background, e tocar nele pela UI seria corrida.
-     */
-    private final Map<String, String> commandsInFlight = new ConcurrentHashMap<>();
 
     private long    acOffTimestamp        = 0;    // epoch ms do último desligamento do AC pelo controle automático
     private long    carStartTimestamp     = 0;    // epoch ms da última partida do carro detectada
@@ -210,6 +201,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private final IListener vehicleDataListener = new IListener.Stub() {
         @Override
         public void onDataChanged(String key, String value) {
+            // O carro aceitou ou devolveu o valor antigo? E a pergunta que nenhum log
+            // respondeu ate agora para a ventilacao do banco.
+            if (CarProps.DRIVER_SEAT_VENT.equals(key) || CarProps.PASSENGER_SEAT_VENT.equals(key)) {
+                PersistentLog.w(TAG, "carro reportou " + key + " = " + value);
+            }
             dataCache.put(key, value);
             // Coalesce: um burst de N propriedades dispara uma única avaliação após assentar.
             backgroundHandler.removeCallbacks(evalRunnable);
@@ -511,11 +507,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             // o usuario clicava de novo, e entraram DOZE escritas do mesmo cycle_mode=2
             // numa rajada de 7,4s. Com o guarda, mash de botao vira uma escrita.
             ClimateStateHolder.INSTANCE.commandCallback = (key, value) -> {
-                if (value.equals(commandsInFlight.get(key))) {
-                    Log.w(TAG, "Command ignorado (mesmo valor ja em voo): " + key + " = " + value);
-                    return;
-                }
-                commandsInFlight.put(key, value);
+                // O descarte de "mesmo valor ja em voo" saiu daqui. Ele nunca chegou a
+                // disparar nos casos reais — as escritas terminavam antes do clique
+                // seguinte — e era mais um caminho que sumia com o comando sem deixar
+                // rastro, justamente o que atrapalhou o diagnostico do botao do banco.
+                PersistentLog.w(TAG, "comando recebido da UI: " + key + " = " + value);
                 backgroundHandler.post(() -> {
                     try {
                         sendHvacCommand(key, value);
@@ -523,9 +519,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                         Log.w(TAG, "Command sent: " + key + " = " + value);
                         pushState(true, null);
                     } catch (Exception e) {
-                        Log.e(TAG, "Error sending command: " + e.getMessage(), e);
-                    } finally {
-                        commandsInFlight.remove(key, value);
+                        PersistentLog.e(TAG, "falha ao escrever " + key + " = " + value + ": " + e);
                     }
                 });
             };
