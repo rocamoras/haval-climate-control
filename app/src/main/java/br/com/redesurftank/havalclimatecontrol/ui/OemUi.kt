@@ -8,10 +8,12 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
@@ -91,9 +93,7 @@ fun OemIcon(
         modifier = modifier
             .size(size, height)
             .alpha(if (!enabled) 0.25f else if (on) 1f else 0.55f)
-            .pointerInput(enabled) {
-                if (enabled) detectTapGestures(onTap = { onClick() })
-            },
+            .oemTap(enabled, onClick),
     )
 }
 
@@ -161,6 +161,25 @@ fun OemWind(resId: Int, width: Dp, height: Dp, modifier: Modifier = Modifier) {
 }
 
 /**
+ * Toque que sempre chama o lambda ATUAL.
+ *
+ * `pointerInput` so reinicia o bloco quando a CHAVE muda, e o bloco captura o lambda que
+ * existia na primeira composicao. Com chave constante (`Unit`, `enabled`), todo toque
+ * seguinte chamava aquele primeiro lambda — com o estado congelado junto. Era isso que
+ * quebrava o botao do banco e o da recirculacao: no log de 05/09 o clique aparece com
+ * `nivel=0 raw='1'`, ou seja, a propriedade ja valia 1 e o lambda do clique ainda
+ * enxergava 0, entao mandava 1 de novo, para sempre. `rememberUpdatedState` mantem o
+ * gesto vivo (sem reiniciar a cada recomposicao) e ainda assim chama o lambda novo.
+ */
+private fun Modifier.oemTap(enabled: Boolean = true, onClick: () -> Unit): Modifier =
+    composed {
+        val current by rememberUpdatedState(onClick)
+        pointerInput(enabled) {
+            if (enabled) detectTapGestures(onTap = { current() })
+        }
+    }
+
+/**
  * Ícone de banco: glifo apagado por baixo, nível aceso por cima. O selo AUTO é nosso —
  * o OEM não tem esse estado, e sem ele não haveria como voltar ao automático depois de
  * mexer no nível.
@@ -178,7 +197,7 @@ fun OemSeatIcon(
     Box(
         modifier = modifier
             .size(size)
-            .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) },
+            .oemTap(onClick = onClick),
     ) {
         Image(
             painter = painterResource(dimRes),
@@ -369,7 +388,7 @@ fun OemBackHeader(title: String, onBack: () -> Unit) {
         modifier = Modifier
             .absoluteOffset(50.dp, 32.dp)
             .height(88.dp)
-            .pointerInput(Unit) { detectTapGestures(onTap = { onBack() }) },
+            .oemTap(onClick = onBack),
     ) {
         Canvas(Modifier.size(44.dp)) {
             val w = size.width
@@ -414,7 +433,7 @@ fun OemSeg(options: List<String>, selected: Int, width: Dp, onSelect: (Int) -> U
                     .fillMaxHeight()
                     .clip(RoundedCornerShape(4.dp))
                     .background(if (on) OemAccent.copy(alpha = 0.20f) else Color.Transparent)
-                    .pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) },
+                    .oemTap { onSelect(i) },
             ) {
                 Text(
                     label, fontSize = 32.sp,
@@ -458,7 +477,7 @@ fun OemButton(label: String, enabled: Boolean = true, width: Dp = 400.dp, onClic
             .width(width).height(64.dp)
             .clip(RoundedCornerShape(4.dp))
             .background(if (enabled) OemAccent.copy(alpha = 0.20f) else Color(0x14FFFFFF))
-            .pointerInput(enabled) { if (enabled) detectTapGestures(onTap = { onClick() }) },
+            .oemTap(enabled, onClick),
     ) {
         Text(label, fontSize = 28.sp, color = if (enabled) OemAccent else OemInk3)
     }
@@ -485,7 +504,7 @@ fun OemAppAutoIcon(
     Box(
         modifier = modifier
             .size(size)
-            .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) },
+            .oemTap(onClick = onClick),
     ) {
         Image(
             painter = painterResource(baseRes),
