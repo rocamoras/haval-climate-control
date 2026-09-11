@@ -86,6 +86,7 @@ private const val KEY_SEAT_VENT_AUTO       = "seat_vent_auto_enabled"
 private const val KEY_COMFORT_MODE         = "comfort_mode"
 private const val KEY_REAL_OUTSIDE_TEMP    = "real_outside_temp_enabled"
 private const val KEY_HOME_CARD            = "home_card_enabled"
+private const val KEY_HIDE_ONLINE_ROW      = "hide_online_row_enabled"
 private const val UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
 // Prefs do serviço (device-protected). A flag do Shizuku mora aqui e não em UI_PREFS
@@ -451,6 +452,9 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     var homeCardEnabled by remember {
         mutableStateOf(prefs.getBoolean(KEY_HOME_CARD, false))
     }
+    var hideOnlineRowEnabled by remember {
+        mutableStateOf(prefs.getBoolean(KEY_HIDE_ONLINE_ROW, false))
+    }
     var showHelp     by remember { mutableStateOf(false) }
     var showCardHelp by remember { mutableStateOf(false) }
     val fridaAvailable = remember { FridaUtils.fridaToolsEmbedded() }
@@ -600,6 +604,20 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 }
                 HelpDot { showCardHelp = true }
             }
+
+            OemRow("Esconder fileira online do OEM") {
+                OemSeg(listOf("Desl.", "Lig."), if (hideOnlineRowEnabled) 1 else 0, 400.dp) { i ->
+                    val enabled = i == 1
+                    hideOnlineRowEnabled       = enabled
+                    state.hideOnlineRowEnabled = enabled
+                    prefs.edit().putBoolean(KEY_HIDE_ONLINE_ROW, enabled).apply()
+                    state.onHideOnlineRowToggle?.onToggle(enabled)
+                }
+            }
+            OemNote("Experimental: muda persist.bean.country.code para a central parar de " +
+                    "montar a fileira do Deezer (fica um espaço vazio, sem Frida). É uma " +
+                    "propriedade global do OEM — pode afetar HVAC, launcher, status bar e " +
+                    "clima. Desligar restaura o valor original. Reinicia a MediaCenter ao aplicar.")
 
             OemRow("Subir servidor do Shizuku") {
                 OemSeg(listOf("Desl.", "Lig."), if (startShizukuEnabled) 1 else 0, 400.dp) { i ->

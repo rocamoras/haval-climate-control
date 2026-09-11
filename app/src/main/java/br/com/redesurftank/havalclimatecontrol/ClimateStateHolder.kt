@@ -99,6 +99,9 @@ object ClimateStateHolder {
     // Configurações — Card na Home da MediaCenter. Espelho lido pelo serviço.
     var homeCardEnabled by mutableStateOf(false)
 
+    // Configurações — Esconder a fileira de mídia online do OEM (via country code).
+    var hideOnlineRowEnabled by mutableStateOf(false)
+
     /** Callback UI → serviço para as opções que dependem de injeção Frida.
      *  fun interface para permitir lambda de Java (o serviço). */
     fun interface ToggleCallback {
@@ -107,6 +110,7 @@ object ClimateStateHolder {
 
     @Volatile var onRealOutsideTempToggle: ToggleCallback? = null
     @Volatile var onHomeCardToggle: ToggleCallback? = null
+    @Volatile var onHideOnlineRowToggle: ToggleCallback? = null
 
     /**
      * Avisa o serviço quando a nossa Activity entra e sai de foco.

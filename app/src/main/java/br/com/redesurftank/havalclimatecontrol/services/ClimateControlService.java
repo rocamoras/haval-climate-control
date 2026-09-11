@@ -74,6 +74,27 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String UI_PREFS_NAME         = "climate_ui_prefs";
     private static final String KEY_REAL_OUTSIDE_TEMP = "real_outside_temp_enabled";
     private static final String KEY_HOME_CARD         = "home_card_enabled";
+    private static final String KEY_HIDE_ONLINE_ROW   = "hide_online_row_enabled";
+
+    // ── Esconder a fileira de midia online do OEM pela raiz (sem Frida) ─────────
+    // OnlineOsModelImpl.initHelper() monta a lista fixa da fileira a partir SO desta
+    // property: 17 (Brasil) -> [551 Deezer], qualquer valor nao mapeado -> lista vazia,
+    // e o proprio OEM desenha a fileira vazia. Persiste entre reboots, dispensa injecao.
+    // ATENCAO: e uma property GLOBAL do OEM — hvac, intelligentvehiclecontrol, launcher,
+    // systemui, weatherservice e energyassistant tambem a leem. Mexer aqui pode alterar
+    // o comportamento deles. Por isso e opt-in e guarda o valor original para restaurar.
+    private static final String COUNTRY_CODE_PROP     = "persist.bean.country.code";
+    private static final String COUNTRY_CODE_HIDDEN   = "0";   // fora de {13,15,17} -> fileira vazia
+    private static final String COUNTRY_CODE_DEFAULT  = "17";  // Brasil, se nao houver original salvo
+    private static final String KEY_SAVED_COUNTRY_CODE = "saved_country_code";
+
+    // ── Idade minima do processo alvo antes de injetar (anti-reinicio no boot) ──
+    // Attach de Frida num processo ainda subindo (ART em init, ptrace-sensivel) e a
+    // hipotese para a Home reiniciar no boot. Com isto > 0, so injetamos na MediaCenter
+    // depois que o processo dela tem pelo menos este tempo de vida; enquanto nao tem, o
+    // watchdog reintenta no ritmo rapido. 0 desliga o portao. Custo: o card demora ate
+    // este tempo para aparecer no boot (fileira vazia ou do OEM ate la).
+    private static final long   MIN_MEDIACENTER_INJECT_AGE_MS = 8_000;
 
     private static final String HVAC_PACKAGE_NAME    = "com.beantechs.hvac";
     private static final String WEATHER_PACKAGE_NAME = "com.beantechs.weatherservice";
@@ -180,6 +201,17 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private String  injectedMediaCenterPid      = "";
     /** pid onde a injecao do card ja falhou por falta das classes; "" se nenhum. */
     private String  homeCardWrongPid            = "";
+    /**
+     * elapsedRealtime do ULTIMO attach que disparamos na MediaCenter (applyHomeCard ou
+     * watchdog). Serve so para o diagnostico: quando o pid da MediaCenter muda, medimos
+     * o Δt desde aqui — se ela morre sempre poucos ms/s depois do nosso attach, o dedo e
+     * nosso; se morre longe de qualquer attach, e a MediaCenter/OEM reiniciando sozinho.
+     */
+    private long    lastMediaCenterInjectMs     = 0;
+    /** Ultimo pid para o qual ja logamos "adiado por idade"; evita repetir a cada tick. */
+    private String  deferredAgePid              = "";
+    /** Espelha KEY_HIDE_ONLINE_ROW no ciclo atual. */
+    private volatile boolean hideOnlineRowEnabled = false;
 
     // Watchdog unico dos dois alvos Frida, com intervalo adaptativo.
     private final Runnable injectionWatchdogRunnable = this::injectionWatchdogTick;
@@ -970,14 +1002,24 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
         ClimateStateHolder.INSTANCE.setOnHomeCardToggle(enabled ->
                 backgroundHandler.post(() -> applyHomeCard(enabled)));
+        ClimateStateHolder.INSTANCE.setOnHideOnlineRowToggle(enabled ->
+                backgroundHandler.post(() -> applyHideOnlineRow(enabled)));
 
         boolean wanted = false;
+        boolean hideRow = false;
         try {
-            wanted = App.getContext()
-                    .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
-                    .getBoolean(KEY_HOME_CARD, false);
+            SharedPreferences ui = App.getContext()
+                    .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE);
+            wanted  = ui.getBoolean(KEY_HOME_CARD, false);
+            hideRow = ui.getBoolean(KEY_HIDE_ONLINE_ROW, false);
         } catch (Exception e) {
-            Log.w(TAG, "Falha lendo pref home_card: " + e.getMessage());
+            Log.w(TAG, "Falha lendo prefs do card/online-row: " + e.getMessage());
+        }
+        // A supressao pela country code precisa reaplicar a cada boot: a property e
+        // persistente, mas so a reescrevemos nos; se o OEM a repuser no boot, isto corrige.
+        if (hideRow) {
+            ClimateStateHolder.INSTANCE.setHideOnlineRowEnabled(true);
+            applyHideOnlineRow(true);
         }
         if (wanted) {
             ClimateStateHolder.INSTANCE.setHomeCardEnabled(true);
@@ -990,12 +1032,25 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private void applyHomeCard(boolean enabled) {
         homeCardEnabled = enabled;
         if (enabled) {
+            // Portao anti-reinicio: se o processo da MediaCenter ainda e muito novo, nao
+            // ataca agora — o watchdog reintenta no ritmo rapido ate ele amadurecer.
+            if (shouldDeferMediaCenterAttach(FridaUtils.mediaCenterPid())) {
+                homeCardInjected = false;
+                rearmInjectionWatchdog(HOME_CARD_RETRY_MS);
+                return;
+            }
+            lastMediaCenterInjectMs = SystemClock.elapsedRealtime();
             String msg = FridaUtils.startHomeCard();
             injectedMediaCenterPid = FridaUtils.mediaCenterPid();
             homeCardInjected = !injectedMediaCenterPid.isEmpty()
                     && FridaUtils.isHomeCardInjectionAlive();
-            Log.w(TAG, "[homecard] ativado: " + msg + " (mediacenter pid="
-                    + injectedMediaCenterPid + ", injetado=" + homeCardInjected + ")");
+            // Em disco (nao so logcat): o upload de diagnostico nao le logcat, entao sem
+            // isto o attach que reinicia a MediaCenter fica invisivel. uptime do device
+            // separa "attach no boot" (alvo fragil) de "attach com a central estavel".
+            PersistentLog.w(TAG, "[homecard] attach: " + msg + " (mediacenter pid="
+                    + injectedMediaCenterPid + ", injetado=" + homeCardInjected
+                    + ", uptime " + (SystemClock.elapsedRealtime() / 1000) + "s)");
+            if (!homeCardInjected) logMediaCenterInjectorTail("attach nao pegou");
         } else {
             // Grava "off" e só encerra o injetor depois que o script teve tempo de
             // restaurar a fileira — matá-lo antes congelaria a tela sem os ícones.
@@ -1016,6 +1071,140 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // -----------------------------
     // Watchdog unico das injecoes Frida
     // -----------------------------
+
+    /**
+     * Colhe, em disco, a causa da morte da MediaCenter quando o pid dela muda. Responde
+     * a pergunta central do diagnostico: fomos nos que a derrubamos (attach num processo
+     * ainda subindo -> SIGSEGV nativo) ou o proprio OEM a reiniciou (kill por memoria,
+     * sequencia de boot)?
+     *
+     * Le so os buffers do logcat, que o shell do Shizuku enxerga sem root:
+     *   - events: am_proc_died / am_kill / am_proc_start da MediaCenter — diz se foi kill
+     *     (e o motivo textual) ou restart limpo;
+     *   - crash: se ela crashou de verdade, o sinal/abort aparece aqui.
+     * Tudo com `-d` (dump e sai) e `-t` (so a cauda), para nunca bloquear o watchdog.
+     * Roda no backgroundHandler, como o resto do tick.
+     */
+    private void captureMediaCenterDeath(String oldPid, String newPid) {
+        try {
+            String cmd =
+                "echo '-- events (am_proc_died/kill/start) --';"
+              + " logcat -b events -d -t 500 2>/dev/null"
+              + "  | grep -iE 'am_proc_died|am_kill|am_crash|am_anr|am_proc_start'"
+              + "  | grep -i 'beantechs.mediacenter' | tail -12;"
+              + " echo '-- crash --';"
+              + " logcat -b crash -d -t 400 2>/dev/null"
+              + "  | grep -iE 'beantechs.mediacenter|DEBUG|signal|libc|tombstone'"
+              + "  | tail -20";
+            String out = ShizukuUtils.runCommandAndGetOutput(new String[]{"sh", "-c", cmd});
+            if (out == null) out = "";
+            out = out.trim();
+            PersistentLog.write(TAG, "[homecard] causa da morte da MediaCenter (pid " + oldPid
+                    + " -> " + newPid + "):\n"
+                    + (out.isEmpty() ? "(logcat vazio/indisponivel para o shell)" : out));
+        } catch (Exception e) {
+            PersistentLog.write(TAG, "[homecard] falha colhendo causa da morte: " + e);
+        }
+    }
+
+    /**
+     * true se devemos ADIAR o attach na MediaCenter porque o processo dela ainda e muito
+     * novo (portao anti-reinicio no boot, {@link #MIN_MEDIACENTER_INJECT_AGE_MS}).
+     *
+     * Conservador de proposito: idade desconhecida (-1) NAO adia — so adiamos quando temos
+     * certeza de que o processo e novo. Loga uma vez por pid para nao poluir o tick rapido.
+     */
+    private boolean shouldDeferMediaCenterAttach(String pid) {
+        if (MIN_MEDIACENTER_INJECT_AGE_MS <= 0) return false;
+        if (pid == null || pid.isEmpty()) return false;   // sem processo: o retry normal cuida
+        long age = FridaUtils.processAgeMs(pid);
+        if (age < 0) return false;                         // nao sei a idade: nao bloqueia
+        if (age >= MIN_MEDIACENTER_INJECT_AGE_MS) return false;
+        if (!pid.equals(deferredAgePid)) {
+            deferredAgePid = pid;
+            PersistentLog.w(TAG, "[homecard] MediaCenter pid " + pid + " tem " + age
+                    + "ms (< " + MIN_MEDIACENTER_INJECT_AGE_MS + "ms) — adiando attach"
+                    + " (uptime " + (SystemClock.elapsedRealtime() / 1000) + "s)");
+        }
+        return true;
+    }
+
+    /**
+     * Liga/desliga a supressao da fileira de midia online do OEM pela property de country
+     * code — ver {@link #COUNTRY_CODE_PROP}. Roda no backgroundHandler.
+     *
+     * Ao ligar, guarda o valor original UMA vez (para restaurar exato) e grava o valor
+     * "escondido"; ao desligar, restaura o original salvo. Nos dois casos derruba a
+     * MediaCenter para ela remontar a lista no proximo onCreate. EXPERIMENTAL: mexe numa
+     * property global do OEM (ver comentario da constante).
+     */
+    private void applyHideOnlineRow(boolean enabled) {
+        hideOnlineRowEnabled = enabled;
+        try {
+            SharedPreferences sp = App.getContext()
+                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            // setenforce 0 pelo mesmo motivo do caminho Frida: o contexto do shell do
+            // Shizuku pode nao ter permissao de escrever a property com o SELinux impondo.
+            ShizukuUtils.runCommandAndGetOutput(new String[]{"sh", "-c", "setenforce 0"});
+
+            String current = ShizukuUtils.runCommandAndGetOutput(
+                    new String[]{"getprop", COUNTRY_CODE_PROP}).trim();
+
+            if (enabled) {
+                // Guarda o original so na primeira vez, e nunca guarda o proprio valor
+                // "escondido" (se o app reiniciar com a opcao ligada, current ja seria "0").
+                if (!sp.contains(KEY_SAVED_COUNTRY_CODE)
+                        && !current.isEmpty()
+                        && !COUNTRY_CODE_HIDDEN.equals(current)) {
+                    sp.edit().putString(KEY_SAVED_COUNTRY_CODE, current).apply();
+                }
+                // Idempotente: se a property JA esta escondida (persistiu do boot anterior),
+                // nao reescreve nem derruba a MediaCenter — um force-stop a toa aqui seria
+                // mais um reinicio da Home a cada boot, exatamente o que queremos evitar.
+                if (COUNTRY_CODE_HIDDEN.equals(current)) {
+                    PersistentLog.write(TAG, "[online-row] ja escondida ("
+                            + COUNTRY_CODE_PROP + "=" + current + "), nada a fazer");
+                    return;
+                }
+                ShizukuUtils.runCommandAndGetOutput(
+                        new String[]{"setprop", COUNTRY_CODE_PROP, COUNTRY_CODE_HIDDEN});
+                String after = ShizukuUtils.runCommandAndGetOutput(
+                        new String[]{"getprop", COUNTRY_CODE_PROP}).trim();
+                ShizukuUtils.runCommandAndGetOutput(
+                        new String[]{"am", "force-stop", FridaUtils.TARGET_MEDIA_CENTER.processName});
+                PersistentLog.w(TAG, "[online-row] escondida: " + COUNTRY_CODE_PROP
+                        + " " + current + " -> " + after
+                        + " (original salvo=" + sp.getString(KEY_SAVED_COUNTRY_CODE, "?") + ")");
+            } else {
+                String original = sp.getString(KEY_SAVED_COUNTRY_CODE, COUNTRY_CODE_DEFAULT);
+                ShizukuUtils.runCommandAndGetOutput(
+                        new String[]{"setprop", COUNTRY_CODE_PROP, original});
+                String after = ShizukuUtils.runCommandAndGetOutput(
+                        new String[]{"getprop", COUNTRY_CODE_PROP}).trim();
+                ShizukuUtils.runCommandAndGetOutput(
+                        new String[]{"am", "force-stop", FridaUtils.TARGET_MEDIA_CENTER.processName});
+                PersistentLog.w(TAG, "[online-row] restaurada: " + COUNTRY_CODE_PROP
+                        + " " + current + " -> " + after);
+            }
+        } catch (Exception e) {
+            PersistentLog.e(TAG, "[online-row] falha aplicando (" + enabled + "): " + e);
+        }
+    }
+
+    /** Cauda do .log do injetor do card em disco — o porque de um attach nao ter pego. */
+    private void logMediaCenterInjectorTail(String motivo) {
+        try {
+            String log = FridaUtils.TARGET_MEDIA_CENTER.logPath();
+            String out = ShizukuUtils.runCommandAndGetOutput(
+                    new String[]{"sh", "-c", "tail -c 1500 " + log + " 2>/dev/null"});
+            if (out == null) out = "";
+            out = out.trim();
+            PersistentLog.write(TAG, "[homecard] " + motivo + " — cauda de " + log + ":\n"
+                    + (out.isEmpty() ? "(log do injetor vazio/ausente)" : out));
+        } catch (Exception e) {
+            PersistentLog.write(TAG, "[homecard] falha lendo log do injetor: " + e);
+        }
+    }
 
     /**
      * (Re)agenda o watchdog compartilhado, ou o encerra se nenhum alvo esta ligado.
@@ -1073,9 +1262,30 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                     // mudou desde a tentativa furada — no mesmo pid daria o mesmo erro
                     // a cada tick, para sempre.
                     boolean wrongPidIsNew = st.wrongTarget && !st.pid.equals(homeCardWrongPid);
-                    if (restarted || !st.injectorAlive || wrongPidIsNew) {
-                        Log.w(TAG, "[homecard] watchdog re-injetando (restart=" + restarted
+                    // A troca de pid E o reinicio da Home. Registra em disco com o Δt desde
+                    // o nosso ultimo attach e colhe a causa da morte (crash x kill x boot),
+                    // que e o que decide se fomos nos. So quando ja tinhamos um pid: a
+                    // primeira aparicao no boot (pid vazio -> pid) nao e reinicio.
+                    if (restarted && !injectedMediaCenterPid.isEmpty()) {
+                        long dt = lastMediaCenterInjectMs == 0 ? -1
+                                : SystemClock.elapsedRealtime() - lastMediaCenterInjectMs;
+                        PersistentLog.w(TAG, "[homecard] MediaCenter reiniciou: pid "
+                                + injectedMediaCenterPid + " -> " + st.pid
+                                + " (uptime " + (SystemClock.elapsedRealtime() / 1000)
+                                + "s, Δt desde nosso attach = "
+                                + (dt < 0 ? "n/a" : dt + "ms") + ")");
+                        captureMediaCenterDeath(injectedMediaCenterPid, st.pid);
+                    }
+                    boolean wantInject = restarted || !st.injectorAlive || wrongPidIsNew;
+                    if (wantInject && shouldDeferMediaCenterAttach(st.pid)) {
+                        // Processo ainda novo: adia. O next-calc abaixo ja volta ao ritmo
+                        // rapido porque homeCardInjected fica false.
+                        homeCardInjected = false;
+                    } else if (wantInject) {
+                        PersistentLog.w(TAG, "[homecard] watchdog re-injetando (restart=" + restarted
+                                + " injetorVivo=" + st.injectorAlive
                                 + " alvoErrado=" + st.wrongTarget + ")");
+                        lastMediaCenterInjectMs = SystemClock.elapsedRealtime();
                         FridaUtils.startHomeCard();
                         injectedMediaCenterPid = FridaUtils.mediaCenterPid();
                         // Sem uma segunda ida ao shell so para confirmar: se a injecao

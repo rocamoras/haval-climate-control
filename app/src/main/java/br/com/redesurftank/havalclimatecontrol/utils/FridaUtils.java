@@ -300,6 +300,29 @@ public class FridaUtils {
         return pid;
     }
 
+    /**
+     * Idade do processo em ms, ou -1 se desconhecida (pid vazio, morto, ou shell ilegivel).
+     *
+     * Usa o mtime de /proc/<pid> (segundos desde a epoch), que o toybox `stat` do device
+     * expoe e o shell le sem root — mais simples e robusto que decodificar o campo 22 de
+     * /proc/<pid>/stat em jiffies. -1 significa "nao sei" e o chamador NAO deve bloquear
+     * por isso: adiar por uma leitura falha seria pior que injetar.
+     */
+    public static long processAgeMs(String pid) {
+        if (pid == null || pid.isEmpty()) return -1;
+        try {
+            String out = ShizukuUtils.runCommandAndGetOutput(new String[]{"sh", "-c",
+                    "now=$(date +%s); st=$(stat -c %Y /proc/" + pid + " 2>/dev/null); "
+                  + "[ -n \"$st\" ] && echo $((now - st))"}).trim();
+            if (out.isEmpty()) return -1;
+            if (out.contains("\n")) out = out.split("\n")[0].trim();
+            long secs = Long.parseLong(out);
+            return secs < 0 ? -1 : secs * 1000L;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
     /** Estado de um alvo colhido por {@link #probe}. */
     public static final class TargetStatus {
         /** pid do processo alvo, ou "" se ele nao esta rodando. */
