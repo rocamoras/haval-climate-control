@@ -74,27 +74,25 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String UI_PREFS_NAME         = "climate_ui_prefs";
     private static final String KEY_REAL_OUTSIDE_TEMP = "real_outside_temp_enabled";
     private static final String KEY_HOME_CARD         = "home_card_enabled";
-    private static final String KEY_HIDE_ONLINE_ROW   = "hide_online_row_enabled";
 
-    // ── Esconder a fileira de midia online do OEM pela raiz (sem Frida) ─────────
-    // OnlineOsModelImpl.initHelper() monta a lista fixa da fileira a partir SO desta
-    // property: 17 (Brasil) -> [551 Deezer], qualquer valor nao mapeado -> lista vazia,
-    // e o proprio OEM desenha a fileira vazia. Persiste entre reboots, dispensa injecao.
-    // ATENCAO: e uma property GLOBAL do OEM — hvac, intelligentvehiclecontrol, launcher,
-    // systemui, weatherservice e energyassistant tambem a leem. Mexer aqui pode alterar
-    // o comportamento deles. Por isso e opt-in e guarda o valor original para restaurar.
-    private static final String COUNTRY_CODE_PROP     = "persist.bean.country.code";
-    private static final String COUNTRY_CODE_HIDDEN   = "0";   // fora de {13,15,17} -> fileira vazia
-    private static final String COUNTRY_CODE_DEFAULT  = "17";  // Brasil, se nao houver original salvo
+    // ── Limpeza do experimento de country code (removido) ──────────────────────
+    // A supressao da fileira online por persist.bean.country.code foi abandonada: o OEM
+    // reescreve a property sozinho (volta a 17 em segundos) e forcar o valor exigia um
+    // `am force-stop` na MediaCenter a cada boot — ou seja, ERAMOS NOS reiniciando a Home.
+    // Quem esconde a fileira agora e so o hook Frida (getMCpList vazio + repinta no mesmo
+    // frame do onCreate). Mantemos apenas o necessario para desfazer, uma vez, o valor que
+    // versoes 1.25.0 tenham deixado gravado nos devices em campo.
+    private static final String COUNTRY_CODE_PROP      = "persist.bean.country.code";
+    private static final String COUNTRY_CODE_DEFAULT   = "17";  // Brasil, se nao houver original salvo
     private static final String KEY_SAVED_COUNTRY_CODE = "saved_country_code";
 
     // ── Idade minima do processo alvo antes de injetar (anti-reinicio no boot) ──
-    // Attach de Frida num processo ainda subindo (ART em init, ptrace-sensivel) e a
-    // hipotese para a Home reiniciar no boot. Com isto > 0, so injetamos na MediaCenter
-    // depois que o processo dela tem pelo menos este tempo de vida; enquanto nao tem, o
-    // watchdog reintenta no ritmo rapido. 0 desliga o portao. Custo: o card demora ate
-    // este tempo para aparecer no boot (fileira vazia ou do OEM ate la).
-    private static final long   MIN_MEDIACENTER_INJECT_AGE_MS = 8_000;
+    // Portao opcional: com isto > 0, so injetamos na MediaCenter depois que o processo
+    // dela tem esse tempo de vida (evita attach num processo ainda subindo). Fica em 0
+    // por padrao — o log mostrou que os reinicios da Home eram do nosso force-stop e do
+    // crash do system_server, nao do attach; e adiar o attach so alargava a janela de
+    // Deezer no boot. Subir de novo se o diagnostico apontar o attach como culpado.
+    private static final long   MIN_MEDIACENTER_INJECT_AGE_MS = 0;
 
     private static final String HVAC_PACKAGE_NAME    = "com.beantechs.hvac";
     private static final String WEATHER_PACKAGE_NAME = "com.beantechs.weatherservice";
@@ -210,8 +208,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private long    lastMediaCenterInjectMs     = 0;
     /** Ultimo pid para o qual ja logamos "adiado por idade"; evita repetir a cada tick. */
     private String  deferredAgePid              = "";
-    /** Espelha KEY_HIDE_ONLINE_ROW no ciclo atual. */
-    private volatile boolean hideOnlineRowEnabled = false;
 
     // Watchdog unico dos dois alvos Frida, com intervalo adaptativo.
     private final Runnable injectionWatchdogRunnable = this::injectionWatchdogTick;
@@ -1002,28 +998,49 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
         ClimateStateHolder.INSTANCE.setOnHomeCardToggle(enabled ->
                 backgroundHandler.post(() -> applyHomeCard(enabled)));
-        ClimateStateHolder.INSTANCE.setOnHideOnlineRowToggle(enabled ->
-                backgroundHandler.post(() -> applyHideOnlineRow(enabled)));
+
+        // Desfaz, uma vez, o country code que a 1.25.0 possa ter deixado gravado.
+        restoreCountryCodeIfNeeded();
 
         boolean wanted = false;
-        boolean hideRow = false;
         try {
-            SharedPreferences ui = App.getContext()
-                    .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE);
-            wanted  = ui.getBoolean(KEY_HOME_CARD, false);
-            hideRow = ui.getBoolean(KEY_HIDE_ONLINE_ROW, false);
+            wanted = App.getContext()
+                    .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_HOME_CARD, false);
         } catch (Exception e) {
-            Log.w(TAG, "Falha lendo prefs do card/online-row: " + e.getMessage());
-        }
-        // A supressao pela country code precisa reaplicar a cada boot: a property e
-        // persistente, mas so a reescrevemos nos; se o OEM a repuser no boot, isto corrige.
-        if (hideRow) {
-            ClimateStateHolder.INSTANCE.setHideOnlineRowEnabled(true);
-            applyHideOnlineRow(true);
+            Log.w(TAG, "Falha lendo pref do card: " + e.getMessage());
         }
         if (wanted) {
             ClimateStateHolder.INSTANCE.setHomeCardEnabled(true);
             applyHomeCard(true);
+        }
+    }
+
+    /**
+     * Restaura, uma unica vez, o persist.bean.country.code que a 1.25.0 sobrescreveu para
+     * esconder a fileira online. Roda so se ha um valor salvo (KEY_SAVED_COUNTRY_CODE);
+     * repoe o original e limpa a marca. Sem force-stop: o hook Frida ja esconde a fileira,
+     * e o proprio OEM reescreve a property no boot de qualquer jeito — nao vale reiniciar
+     * a Home so por isso.
+     */
+    private void restoreCountryCodeIfNeeded() {
+        try {
+            SharedPreferences sp = App.getContext()
+                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            if (!sp.contains(KEY_SAVED_COUNTRY_CODE)) return;
+            String original = sp.getString(KEY_SAVED_COUNTRY_CODE, COUNTRY_CODE_DEFAULT);
+            String current  = ShizukuUtils.runCommandAndGetOutput(
+                    new String[]{"getprop", COUNTRY_CODE_PROP}).trim();
+            if (!original.equals(current)) {
+                ShizukuUtils.runCommandAndGetOutput(new String[]{"sh", "-c", "setenforce 0"});
+                ShizukuUtils.runCommandAndGetOutput(
+                        new String[]{"setprop", COUNTRY_CODE_PROP, original});
+            }
+            sp.edit().remove(KEY_SAVED_COUNTRY_CODE).apply();
+            PersistentLog.w(TAG, "[online-row] experimento revertido: " + COUNTRY_CODE_PROP
+                    + " restaurado para " + original + " (estava " + current + ")");
+        } catch (Exception e) {
+            Log.w(TAG, "Falha revertendo country code: " + e.getMessage());
         }
     }
 
@@ -1127,68 +1144,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                     + " (uptime " + (SystemClock.elapsedRealtime() / 1000) + "s)");
         }
         return true;
-    }
-
-    /**
-     * Liga/desliga a supressao da fileira de midia online do OEM pela property de country
-     * code — ver {@link #COUNTRY_CODE_PROP}. Roda no backgroundHandler.
-     *
-     * Ao ligar, guarda o valor original UMA vez (para restaurar exato) e grava o valor
-     * "escondido"; ao desligar, restaura o original salvo. Nos dois casos derruba a
-     * MediaCenter para ela remontar a lista no proximo onCreate. EXPERIMENTAL: mexe numa
-     * property global do OEM (ver comentario da constante).
-     */
-    private void applyHideOnlineRow(boolean enabled) {
-        hideOnlineRowEnabled = enabled;
-        try {
-            SharedPreferences sp = App.getContext()
-                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-            // setenforce 0 pelo mesmo motivo do caminho Frida: o contexto do shell do
-            // Shizuku pode nao ter permissao de escrever a property com o SELinux impondo.
-            ShizukuUtils.runCommandAndGetOutput(new String[]{"sh", "-c", "setenforce 0"});
-
-            String current = ShizukuUtils.runCommandAndGetOutput(
-                    new String[]{"getprop", COUNTRY_CODE_PROP}).trim();
-
-            if (enabled) {
-                // Guarda o original so na primeira vez, e nunca guarda o proprio valor
-                // "escondido" (se o app reiniciar com a opcao ligada, current ja seria "0").
-                if (!sp.contains(KEY_SAVED_COUNTRY_CODE)
-                        && !current.isEmpty()
-                        && !COUNTRY_CODE_HIDDEN.equals(current)) {
-                    sp.edit().putString(KEY_SAVED_COUNTRY_CODE, current).apply();
-                }
-                // Idempotente: se a property JA esta escondida (persistiu do boot anterior),
-                // nao reescreve nem derruba a MediaCenter — um force-stop a toa aqui seria
-                // mais um reinicio da Home a cada boot, exatamente o que queremos evitar.
-                if (COUNTRY_CODE_HIDDEN.equals(current)) {
-                    PersistentLog.write(TAG, "[online-row] ja escondida ("
-                            + COUNTRY_CODE_PROP + "=" + current + "), nada a fazer");
-                    return;
-                }
-                ShizukuUtils.runCommandAndGetOutput(
-                        new String[]{"setprop", COUNTRY_CODE_PROP, COUNTRY_CODE_HIDDEN});
-                String after = ShizukuUtils.runCommandAndGetOutput(
-                        new String[]{"getprop", COUNTRY_CODE_PROP}).trim();
-                ShizukuUtils.runCommandAndGetOutput(
-                        new String[]{"am", "force-stop", FridaUtils.TARGET_MEDIA_CENTER.processName});
-                PersistentLog.w(TAG, "[online-row] escondida: " + COUNTRY_CODE_PROP
-                        + " " + current + " -> " + after
-                        + " (original salvo=" + sp.getString(KEY_SAVED_COUNTRY_CODE, "?") + ")");
-            } else {
-                String original = sp.getString(KEY_SAVED_COUNTRY_CODE, COUNTRY_CODE_DEFAULT);
-                ShizukuUtils.runCommandAndGetOutput(
-                        new String[]{"setprop", COUNTRY_CODE_PROP, original});
-                String after = ShizukuUtils.runCommandAndGetOutput(
-                        new String[]{"getprop", COUNTRY_CODE_PROP}).trim();
-                ShizukuUtils.runCommandAndGetOutput(
-                        new String[]{"am", "force-stop", FridaUtils.TARGET_MEDIA_CENTER.processName});
-                PersistentLog.w(TAG, "[online-row] restaurada: " + COUNTRY_CODE_PROP
-                        + " " + current + " -> " + after);
-            }
-        } catch (Exception e) {
-            PersistentLog.e(TAG, "[online-row] falha aplicando (" + enabled + "): " + e);
-        }
     }
 
     /** Cauda do .log do injetor do card em disco — o porque de um attach nao ter pego. */
