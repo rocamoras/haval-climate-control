@@ -51,6 +51,7 @@ import br.com.redesurftank.havalclimatecontrol.ui.OemSectionTitle
 import br.com.redesurftank.havalclimatecontrol.ui.OemSeg
 import br.com.redesurftank.havalclimatecontrol.ui.theme.HavalClimateControlTheme
 import br.com.redesurftank.havalclimatecontrol.services.ClimateControlService
+import br.com.redesurftank.havalclimatecontrol.utils.BootTest
 import br.com.redesurftank.havalclimatecontrol.utils.FridaUtils
 import br.com.redesurftank.havalclimatecontrol.utils.LogUploader
 import br.com.redesurftank.havalclimatecontrol.utils.SystemPropsUtils
@@ -93,6 +94,7 @@ private const val UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 // storage ela leria false em todo boot frio.
 private const val SERVICE_PREFS            = "climate_control_prefs"
 private const val KEY_START_SHIZUKU        = "start_shizuku_server"
+private const val BOOT_TEST_BOOTS          = 3
 
 // ─────────────────────────────────────────────────────────────
 // HMI color tokens — monochromatic dark, accent only for active
@@ -468,6 +470,7 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     // o unico caminho para subir o servidor. Sem uid baixo a flag nao tem como funcionar.
     val selfUid = remember { runCatching { context.applicationInfo.uid }.getOrDefault(-1) }
     val canReachTelnet = selfUid in 0..10999
+    var bootTestRemaining by remember { mutableStateOf(BootTest.remaining(context)) }
 
     // Envio de log — veio da tela de debug, que deixou de existir. O log em si ficou
     // invisível: o serviço continua escrevendo no PersistentLog, e é esse arquivo que
@@ -644,6 +647,32 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 OemButton(if (isUploading) "Enviando…" else "Enviar log", enabled = !isUploading) {
                     uploadLog()
                 }
+            }
+
+            // Teste A/B do reinicio do framework no boot: sem o servico, sobra so o OEM.
+            OemRow("Teste: boot sem o app") {
+                if (bootTestRemaining == 0) {
+                    OemButton("Pular 3 boots") {
+                        BootTest.arm(context, BOOT_TEST_BOOTS)
+                        bootTestRemaining = BOOT_TEST_BOOTS
+                    }
+                } else {
+                    OemButton("Cancelar teste") {
+                        BootTest.arm(context, 0)
+                        bootTestRemaining = 0
+                        // Num boot pulado o servico esta parado: cancelar ja sobe ele.
+                        runCatching {
+                            context.startForegroundService(Intent(context, ClimateControlService::class.java))
+                        }
+                    }
+                }
+            }
+            if (bootTestRemaining > 0) {
+                OemNote(
+                    "Faltam $bootTestRemaining boots sem o app (sem Shizuku, card, Frida nem " +
+                        "controle automático). Depois deles o app volta sozinho; aí use " +
+                        "\"Enviar log\" para comparar os reinícios do sistema."
+                )
             }
 
             UpdateRow()

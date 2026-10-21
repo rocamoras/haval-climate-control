@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.util.Log;
 
 import br.com.redesurftank.havalclimatecontrol.services.ClimateControlService;
+import br.com.redesurftank.havalclimatecontrol.utils.BootTest;
 
 public class BootReceiver extends BroadcastReceiver {
 
@@ -15,6 +16,7 @@ public class BootReceiver extends BroadcastReceiver {
     @SuppressLint("UnsafeProtectedBroadcastReceiver")
     @Override
     public void onReceive(Context context, Intent intent) {
+        if (BootTest.shouldSkipServiceStart(context, "BootReceiver " + intent.getAction())) return;
         Log.w(TAG, "Boot completed received, starting ClimateControlService...");
         Intent serviceIntent = new Intent(context, ClimateControlService.class);
         context.startForegroundService(serviceIntent);

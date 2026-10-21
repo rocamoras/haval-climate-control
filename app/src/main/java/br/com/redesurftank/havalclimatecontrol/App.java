@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 
 import br.com.redesurftank.havalclimatecontrol.services.ClimateControlService;
+import br.com.redesurftank.havalclimatecontrol.utils.BootTest;
 import br.com.redesurftank.havalclimatecontrol.utils.PersistentLog;
 
 public class App extends Application {
@@ -38,6 +39,7 @@ public class App extends Application {
         } catch (Exception ignored) {}
         PersistentLog.logProcessStart(version);
 
+        if (BootTest.shouldSkipServiceStart(this, "App.onCreate")) return;
         Intent serviceIntent = new Intent(getContext(), ClimateControlService.class);
         getContext().startForegroundService(serviceIntent);
     }
