@@ -123,7 +123,7 @@ private fun ClimateStateHolder.isOn(v: String) = v == "1"
  * O carro reporta com ponto, mas basta um valor com virgula entrar no cache para a tela
  * parar de ler — por isso a leitura tolera os dois.
  */
-private fun tempOf(raw: String, fallback: Float) =
+internal fun tempOf(raw: String, fallback: Float) =
     raw.replace(',', '.').toFloatOrNull() ?: fallback
 
 /**
@@ -134,9 +134,9 @@ private fun tempOf(raw: String, fallback: Float) =
  * cache do servico guarda a string enviada e a devolve para a tela — que tambem nao a
  * le e cai no fallback. O resultado era o ajuste de temperatura nao sair do lugar.
  */
-private fun tempCmd(v: Float) = String.format(java.util.Locale.US, "%.1f", v)
+internal fun tempCmd(v: Float) = String.format(java.util.Locale.US, "%.1f", v)
 
-private fun intOf(raw: String, fallback: Int) =
+internal fun intOf(raw: String, fallback: Int) =
     Regex("\\d+").findAll(raw).lastOrNull()?.value?.toIntOrNull() ?: fallback
 
 @Composable

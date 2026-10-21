@@ -132,6 +132,9 @@ object ClimateStateHolder {
 
     @Volatile var onRealOutsideTempToggle: ToggleCallback? = null
     @Volatile var onHomeCardToggle: ToggleCallback? = null
+    /** Faixa de clima fixa (overlay + overscan). A pref fica em climate_control_prefs,
+     *  device-protected, porque é ela que decide a limpeza do overscan no boot travado. */
+    @Volatile var onClimateStripToggle: ToggleCallback? = null
 
     /**
      * Avisa o serviço quando a nossa Activity entra e sai de foco.

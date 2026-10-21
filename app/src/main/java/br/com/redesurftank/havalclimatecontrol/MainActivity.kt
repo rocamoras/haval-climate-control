@@ -96,6 +96,7 @@ private const val UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 // storage ela leria false em todo boot frio.
 private const val SERVICE_PREFS            = "climate_control_prefs"
 private const val KEY_START_SHIZUKU        = "start_shizuku_server"
+private const val KEY_CLIMATE_STRIP        = "climate_strip_enabled"
 private const val BOOT_TEST_BOOTS          = 3
 
 // ─────────────────────────────────────────────────────────────
@@ -474,6 +475,9 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     var startShizukuEnabled by remember {
         mutableStateOf(servicePrefs.getBoolean(KEY_START_SHIZUKU, false))
     }
+    var climateStripEnabled by remember {
+        mutableStateOf(servicePrefs.getBoolean(KEY_CLIMATE_STRIP, false))
+    }
     var shizukuUp       by remember { mutableStateOf(SystemPropsUtils.isShizukuReady()) }
     var showShizukuHelp by remember { mutableStateOf(false) }
     // Acima de 10999 o firewall por uid do Android barra a conexao no telnet:23, que e
@@ -652,6 +656,24 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 }
                 HelpDot { showCardHelp = true }
             }
+
+            OemRow("Faixa de clima fixa\n(protótipo)") {
+                OemSeg(listOf("Desl.", "Lig."), if (climateStripEnabled) 1 else 0, 400.dp) { i ->
+                    val enabled = i == 1
+                    climateStripEnabled = enabled
+                    // commit, nao apply: a limpeza do overscan no boot decide por esta pref,
+                    // e a central costuma ser desligada logo depois de mexer na tela.
+                    servicePrefs.edit().putBoolean(KEY_CLIMATE_STRIP, enabled).commit()
+                    state.onClimateStripToggle?.onToggle(enabled)
+                }
+            }
+            Text(
+                "Reserva uma faixa no rodapé da tela com os controles do clima, visível por cima " +
+                    "de qualquer app. No Android Auto o rodapé da imagem fica escondido atrás da " +
+                    "faixa (o AA não se redimensiona). Não use junto com o AutoPanel.",
+                fontSize = 18.sp, color = OemInk3,
+                modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
+            )
 
             OemRow("Subir servidor do Shizuku") {
                 OemSeg(listOf("Desl.", "Lig."), if (startShizukuEnabled) 1 else 0, 400.dp) { i ->
