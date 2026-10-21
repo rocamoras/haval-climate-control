@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import br.com.redesurftank.havalclimatecontrol.App;
@@ -74,6 +75,22 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String UI_PREFS_NAME         = "climate_ui_prefs";
     private static final String KEY_REAL_OUTSIDE_TEMP = "real_outside_temp_enabled";
     private static final String KEY_HOME_CARD         = "home_card_enabled";
+    private static final String KEY_TURBO_ENABLED     = "turbo_enabled";
+    private static final String KEY_TURBO_THRESHOLD   = "turbo_threshold";
+
+    // ── Modo turbo ────────────────────────────────────────────────────────────
+    // Persistido em climate_control_prefs (device-protected), e nao na UI: se o servico
+    // morrer no meio do turbo, a instancia nova precisa saber que o AUTO desligado foi
+    // obra nossa e que devolve-lo ainda e responsabilidade nossa.
+    private static final String KEY_TURBO_ACTIVE      = "turbo_active";
+    // Janela depois de uma escrita do turbo em que auto_enable = 1 NAO conta como o
+    // motorista religando o AUTO — pode ser o eco atrasado do valor anterior.
+    private static final long   TURBO_GRACE_MS        = 5_000;
+    // Folga minima entre o limiar e a temperatura de saida. Sem ela, um alvo acima do
+    // limiar (ou ilegivel, como "LO") faria o turbo ligar e desligar a cada leitura.
+    private static final float  TURBO_MIN_DROP        = 2f;
+    // Mesmo fallback da tela: fan_speed_range quase nunca chega (ver CarProps).
+    private static final int    FAN_SPEED_MAX_FALLBACK = 7;
 
     // ── Limpeza do experimento de country code (removido) ──────────────────────
     // A supressao da fileira online por persist.bean.country.code foi abandonada: o OEM
@@ -184,6 +201,13 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private long    acOffTimestamp        = 0;    // epoch ms do último desligamento do AC pelo controle automático
     private long    carStartTimestamp     = 0;    // epoch ms da última partida do carro detectada
     private boolean insideTempWasOffline  = true; // true enquanto o sensor estava offline (carro desligado)
+
+    /** true enquanto o AUTO esta desligado pelo turbo e cabe a nos religa-lo. */
+    private boolean turboActive     = false;
+    /** O motorista religou o AUTO no meio do turbo: nao entra de novo ate a cabine
+     *  esfriar (limiar - TURBO_MIN_DROP) ou o carro dar nova partida. */
+    private boolean turboOverridden = false;
+    private long    turboWriteMs    = 0;      // elapsedRealtime da ultima escrita do turbo
 
     private boolean  isHvacSuspended    = false;
     private Runnable resumeHvacRunnable = null;
@@ -590,6 +614,29 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 backgroundHandler.post(() -> applyRealOutsideTemp(true));
             }
 
+            // Modo turbo: mesma razao — a avaliacao roda com a tela fechada, entao o
+            // espelho tem que vir da pref, nao do default do ClimateStateHolder.
+            try {
+                SharedPreferences uiPrefs = App.getContext()
+                        .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE);
+                ClimateStateHolder.INSTANCE.setTurboEnabled(
+                        uiPrefs.getBoolean(KEY_TURBO_ENABLED, true));
+                ClimateStateHolder.INSTANCE.setTurboThreshold(uiPrefs.getInt(
+                        KEY_TURBO_THRESHOLD, ClimateStateHolder.TURBO_THRESHOLD_DEFAULT));
+            } catch (Exception e) {
+                Log.w(TAG, "Falha lendo prefs do turbo: " + e.getMessage());
+            }
+            turboActive = App.getDeviceProtectedContext()
+                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_TURBO_ACTIVE, false);
+            if (turboActive) {
+                PersistentLog.w(TAG, "turbo estava ativo quando o servico caiu — retomando");
+            }
+            ClimateStateHolder.INSTANCE.setOnEvaluateRequest(() -> {
+                backgroundHandler.removeCallbacks(evalRunnable);
+                backgroundHandler.post(evalRunnable);
+            });
+
             Shizuku.addBinderDeadListener(this);
             pushState(true, null);
             backgroundHandler.post(this::evaluateClimateControl);
@@ -603,7 +650,13 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private void evaluateClimateControl() {
         try {
             if (!ClimateStateHolder.INSTANCE.getAutoControlEnabled()) {
-                pushState(true, null);
+                // O turbo e parte do controle automatico: desligado o controle, o AUTO
+                // que o turbo tirou tem que voltar — senao o HVAC fica preso no maximo.
+                String log = null;
+                if (turboActive && "1".equals(dataCache.get(CarProps.POWER_MODE))) {
+                    log = exitTurbo("controle automático do app desligado");
+                }
+                pushState(true, log);
                 return;
             }
 
@@ -624,6 +677,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             String logEntry = null;
 
             // Detectar partida do carro (transição offline → online)
+            boolean carJustStarted = insideTempWasOffline;
             if (insideTempWasOffline) {
                 insideTempWasOffline = false;
                 carStartTimestamp    = System.currentTimeMillis();
@@ -645,6 +699,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                     logEntry = timeFormat.format(new Date()) + "  AC ligado — partida do carro (30s protegido)";
                 }
             }
+
+            // Bloco T — Modo turbo. Antes do bloco A: ao entrar ele desliga o AUTO no
+            // dataCache, e o bloco A (que exige AUTO) deixa de mexer no AC e na curva.
+            String turboLog = evaluateTurbo(insideTemp, carJustStarted);
+            if (logEntry == null) logEntry = turboLog;
 
             // Bloco A — AC + comfort curve (requer modo auto do HVAC ligado)
             String autoEnable = dataCache.get(CarProps.AUTO_ENABLE);
@@ -830,15 +889,141 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         }
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // Modo turbo
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * Cabine acima do limiar → sai do AUTO e poe o ventilador no maximo; cabine no alvo →
+     * devolve o AUTO. Roda no backgroundHandler, dentro de evaluateClimateControl.
+     *
+     * So entra a partir do AUTO: com o HVAC em manual o ventilador ja e escolha do
+     * motorista. E nao briga com ele: o maximo e escrito uma vez na entrada; se o
+     * motorista baixar o ventilador, fica como ele deixou ate a saida. Religar o AUTO,
+     * por outro lado, cancela o turbo.
+     *
+     * @return a linha de log da transicao, ou null se nada mudou.
+     */
+    private String evaluateTurbo(float insideTemp, boolean carJustStarted) throws Exception {
+        // HVAC desligado: nem entra nem sai. Escrever auto_enable com ele desligado pode
+        // religa-lo, e o dever de devolver o AUTO continua de pe para quando o motorista
+        // ligar de novo.
+        if (!"1".equals(dataCache.get(CarProps.POWER_MODE))) return null;
+
+        ClimateStateHolder s = ClimateStateHolder.INSTANCE;
+        int threshold = s.getTurboThreshold();
+
+        if (!turboActive) {
+            if (turboOverridden && (carJustStarted || insideTemp <= threshold - TURBO_MIN_DROP)) {
+                turboOverridden = false;
+            }
+            if (!s.getTurboEnabled() || turboOverridden) return null;
+            if (insideTemp <= threshold) return null;
+            if (!"1".equals(dataCache.get(CarProps.AUTO_ENABLE))) return null;
+            return enterTurbo(String.format(Locale.getDefault(),
+                    "Turbo ligado — interna %.1f°C > %d°C", insideTemp, threshold));
+        }
+
+        if (!s.getTurboEnabled()) return exitTurbo("desligado nas configurações");
+
+        float exitTemp = turboExitTemp(threshold);
+        if (insideTemp <= exitTemp) {
+            return exitTurbo(String.format(Locale.getDefault(),
+                    "interna %.1f°C ≤ alvo %.1f°C", insideTemp, exitTemp));
+        }
+
+        // Na partida o firmware pode ter voltado ao AUTO e ao ventilador dele por conta
+        // propria — isso nao e o motorista, entao reaplica em vez de cancelar.
+        if (carJustStarted) {
+            return enterTurbo(String.format(Locale.getDefault(),
+                    "Turbo reaplicado na partida — interna %.1f°C", insideTemp));
+        }
+
+        boolean pastGrace = SystemClock.elapsedRealtime() - turboWriteMs > TURBO_GRACE_MS;
+        if (pastGrace && "1".equals(dataCache.get(CarProps.AUTO_ENABLE))) {
+            setTurboActive(false);
+            turboOverridden = true;
+            return logTurbo("Turbo cancelado — AUTO religado manualmente");
+        }
+        return null;
+    }
+
+    /** Alvo de saida: a temperatura ajustada do motorista, mas sempre pelo menos
+     *  TURBO_MIN_DROP abaixo do limiar. */
+    private float turboExitTemp(int threshold) {
+        float exitTemp = threshold - TURBO_MIN_DROP;
+        try {
+            exitTemp = Math.min(exitTemp, Float.parseFloat(dataCache.get(CarProps.DRIVER_TEMP)));
+        } catch (RuntimeException ignored) {}   // null ou "LO"/"HI": fica o limiar - folga
+        return exitTemp;
+    }
+
+    private String enterTurbo(String reason) throws Exception {
+        String fanMax = String.valueOf(fanSpeedMax());
+        // AUTO primeiro, para o ventilador ja ser escrito com o HVAC em manual.
+        sendHvacCommand(CarProps.AUTO_ENABLE, "0");
+        dataCache.put(CarProps.AUTO_ENABLE, "0");
+        sendHvacCommand(CarProps.FAN_SPEED, fanMax);
+        dataCache.put(CarProps.FAN_SPEED, fanMax);
+        // Fora do AUTO o bloco A para de cuidar do compressor; ventilador no maximo sem
+        // ele so sopra o ar quente da propria cabine.
+        if (!"1".equals(dataCache.get(CarProps.AC_ENABLE))) {
+            sendHvacCommand(CarProps.AC_ENABLE, "1");
+            dataCache.put(CarProps.AC_ENABLE, "1");
+            acOffTimestamp = 0;
+            backgroundHandler.removeCallbacks(acOffCheckRunnable);
+        }
+        turboWriteMs = SystemClock.elapsedRealtime();
+        setTurboActive(true);
+        return logTurbo(reason + " → AUTO desligado, ventilador " + fanMax);
+    }
+
+    private String exitTurbo(String reason) throws Exception {
+        sendHvacCommand(CarProps.AUTO_ENABLE, "1");
+        dataCache.put(CarProps.AUTO_ENABLE, "1");
+        setTurboActive(false);
+        return logTurbo("Turbo desligado — " + reason + " → AUTO religado");
+    }
+
+    private void setTurboActive(boolean active) {
+        turboActive = active;
+        App.getDeviceProtectedContext()
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_TURBO_ACTIVE, active).apply();
+    }
+
+    /** Transicoes do turbo vao para o log persistente mesmo quando outra linha ganha o
+     *  unico slot de log da avaliacao — sao elas que explicam um ventilador no maximo. */
+    private String logTurbo(String msg) {
+        PersistentLog.w(TAG, msg);
+        return timeFormat.format(new Date()) + "  " + msg;
+    }
+
+    /** Mesma regra da tela (intOf em OemClimateScreen): ultimo numero de fan_speed_range. */
+    private int fanSpeedMax() {
+        String raw = dataCache.get(CarProps.FAN_SPEED_RANGE);
+        if (raw != null) {
+            Matcher m = Pattern.compile("\\d+").matcher(raw);
+            String last = null;
+            while (m.find()) last = m.group();
+            try {
+                if (last != null && Integer.parseInt(last) >= 1) return Integer.parseInt(last);
+            } catch (NumberFormatException ignored) {}
+        }
+        return FAN_SPEED_MAX_FALLBACK;
+    }
+
     private void pushState(boolean connected, String logEntry) {
         // Copia defensiva: dataCache continua sendo mutado na backgroundHandler enquanto
         // o post abaixo ainda nao rodou na main. A associacao passou a ser por chave
         // porque com 31 propriedades a lista posicional so criava bug silencioso.
         final Map<String, String> snapshot = new HashMap<>(dataCache);
         final String finalLog = logEntry;
+        final boolean turbo = turboActive;
 
         mainHandler.post(() -> {
             ClimateStateHolder.INSTANCE.updateFromCache(connected, snapshot);
+            ClimateStateHolder.INSTANCE.setTurboActive(turbo);
             if (finalLog != null) {
                 ClimateStateHolder.INSTANCE.addLog(finalLog);
             }

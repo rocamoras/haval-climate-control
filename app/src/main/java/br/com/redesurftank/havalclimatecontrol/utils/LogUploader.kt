@@ -202,6 +202,7 @@ object LogUploader {
             appendLine("temp externa real   : ${state.realOutsideTempEnabled}")
             appendLine("card na home        : ${state.homeCardEnabled}")
             appendLine("controle automatico : ${state.autoControlEnabled}")
+            appendLine("turbo               : ${state.turboEnabled} (limiar ${state.turboThreshold}°C, ativo=${state.turboActive})")
             appendLine("teste boot sem app  : faltam ${BootTest.remaining(context)} boots (linhas [teste-boot] no log persistente)")
             appendLine()
 

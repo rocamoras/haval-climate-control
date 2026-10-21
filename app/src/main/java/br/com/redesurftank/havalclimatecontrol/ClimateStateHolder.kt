@@ -99,6 +99,31 @@ object ClimateStateHolder {
     // Configurações — Card na Home da MediaCenter. Espelho lido pelo serviço.
     var homeCardEnabled by mutableStateOf(false)
 
+    // ── Modo turbo ───────────────────────────────────────────────────────────
+    // Cabine acima do limiar: o serviço tira o HVAC do AUTO e põe o ventilador no
+    // máximo; quando a cabine chega ao alvo, devolve o AUTO. Os dois primeiros são
+    // configuração (espelho do climate_ui_prefs, populado pelo serviço no connect para
+    // valer antes da Activity abrir); turboActive é estado, escrito só pelo serviço.
+    const val TURBO_THRESHOLD_DEFAULT = 38
+    const val TURBO_THRESHOLD_MIN     = 30
+    const val TURBO_THRESHOLD_MAX     = 50
+
+    var turboEnabled   by mutableStateOf(true)
+    var turboThreshold by mutableStateOf(TURBO_THRESHOLD_DEFAULT)
+    var turboActive    by mutableStateOf(false)
+
+    /**
+     * Pede ao serviço uma avaliação fora de hora. A avaliação normal só roda quando o
+     * carro publica alguma propriedade — sem isto, desligar o turbo (ou o controle
+     * automático) no meio de uma sessão de turbo deixaria o HVAC fora do AUTO até a
+     * próxima leitura da cabine.
+     */
+    @Volatile var onEvaluateRequest: Runnable? = null
+
+    fun requestEvaluation() {
+        onEvaluateRequest?.run()
+    }
+
     /** Callback UI → serviço para as opções que dependem de injeção Frida.
      *  fun interface para permitir lambda de Java (o serviço). */
     fun interface ToggleCallback {

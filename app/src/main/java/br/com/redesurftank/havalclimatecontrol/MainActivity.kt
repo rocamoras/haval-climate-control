@@ -87,6 +87,8 @@ private const val KEY_SEAT_VENT_AUTO       = "seat_vent_auto_enabled"
 private const val KEY_COMFORT_MODE         = "comfort_mode"
 private const val KEY_REAL_OUTSIDE_TEMP    = "real_outside_temp_enabled"
 private const val KEY_HOME_CARD            = "home_card_enabled"
+private const val KEY_TURBO_ENABLED        = "turbo_enabled"
+private const val KEY_TURBO_THRESHOLD      = "turbo_threshold"
 private const val UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
 // Prefs do serviço (device-protected). A flag do Shizuku mora aqui e não em UI_PREFS
@@ -296,6 +298,8 @@ fun MainControlScreen(
             autoControlEnabled       = enabled
             state.autoControlEnabled = enabled
             prefs.edit().putBoolean(KEY_AUTO_CONTROL, enabled).apply()
+            // Se o turbo estiver ativo, desligar o controle tem que devolver o AUTO já.
+            state.requestEvaluation()
         },
         onSeatVentAuto         = { enabled ->
             seatVentAutoEnabled       = enabled
@@ -453,6 +457,12 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     var homeCardEnabled by remember {
         mutableStateOf(prefs.getBoolean(KEY_HOME_CARD, false))
     }
+    var turboEnabled by remember {
+        mutableStateOf(prefs.getBoolean(KEY_TURBO_ENABLED, true))
+    }
+    var turboThreshold by remember {
+        mutableStateOf(prefs.getInt(KEY_TURBO_THRESHOLD, ClimateStateHolder.TURBO_THRESHOLD_DEFAULT))
+    }
     var showHelp     by remember { mutableStateOf(false) }
     var showCardHelp by remember { mutableStateOf(false) }
     val fridaAvailable = remember { FridaUtils.fridaToolsEmbedded() }
@@ -578,6 +588,45 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
 
             // ── app ───────────────────────────────────────────────────────────
             OemSectionTitle("Aplicativo")
+
+            OemRow("Modo turbo") {
+                OemSeg(listOf("Desl.", "Lig."), if (turboEnabled) 1 else 0, 400.dp) { i ->
+                    val enabled = i == 1
+                    turboEnabled       = enabled
+                    state.turboEnabled = enabled
+                    prefs.edit().putBoolean(KEY_TURBO_ENABLED, enabled).apply()
+                    state.requestEvaluation()
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    fun setThreshold(v: Int) {
+                        turboThreshold       = v
+                        state.turboThreshold = v
+                        prefs.edit().putInt(KEY_TURBO_THRESHOLD, v).apply()
+                        state.requestEvaluation()
+                    }
+                    OemButton("−", enabled = turboThreshold > ClimateStateHolder.TURBO_THRESHOLD_MIN, width = 96.dp) {
+                        setThreshold(turboThreshold - 1)
+                    }
+                    Text(
+                        "$turboThreshold°C", fontSize = 32.sp, color = OemInk,
+                        textAlign = TextAlign.Center, modifier = Modifier.width(140.dp),
+                    )
+                    OemButton("+", enabled = turboThreshold < ClimateStateHolder.TURBO_THRESHOLD_MAX, width = 96.dp) {
+                        setThreshold(turboThreshold + 1)
+                    }
+                }
+            }
+            Text(
+                "Com a cabine acima do limite, o ar sai do AUTO com a ventilação no máximo, " +
+                    "e volta ao AUTO quando a cabine chega à temperatura ajustada. " +
+                    "Depende do controle automático do app." +
+                    (if (state.turboActive) "  ·  Ativo agora." else ""),
+                fontSize = 18.sp, color = OemInk3,
+                modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
+            )
 
             OemRow("Temperatura externa real") {
                 OemSeg(listOf("Desl.", "Lig."), if (realOutsideTempEnabled) 1 else 0, 400.dp) { i ->

@@ -303,6 +303,14 @@ fun OemClimateScreen(
                     modifier = Modifier.padding(top = 19.dp),
                 )
             }
+            // Selo do modo turbo: explica por que o AUTO apagou e o ventilador foi ao
+            // máximo sem ninguém ter tocado na tela.
+            if (s.turboActive) {
+                Text(
+                    "TURBO", fontSize = 22.sp, fontWeight = FontWeight.Medium, color = OemAccent,
+                    modifier = Modifier.absoluteOffset(966.dp, 471.dp),
+                )
+            }
 
             Box(Modifier.absoluteOffset(635.dp, 532.dp).size(462.dp, 80.dp)) {
                 OemIcon(
