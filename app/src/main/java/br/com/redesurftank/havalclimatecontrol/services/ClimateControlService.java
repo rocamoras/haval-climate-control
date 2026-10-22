@@ -1452,7 +1452,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             FridaUtils.TargetStatus[] status = FridaUtils.probe(targets);
             if (status == null) {
                 // Estado desconhecido (o shell falhou). Re-injetar as cegas reiniciaria
-                // o fridaserver a toa e piscaria a tela — melhor so olhar de novo logo.
+                // o injetor a toa e piscaria a tela — melhor so olhar de novo logo.
                 next = WATCHDOG_MIN_MS;
                 return;
             }

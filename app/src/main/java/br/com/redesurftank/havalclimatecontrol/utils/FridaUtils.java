@@ -20,19 +20,23 @@ import rikka.shizuku.Shizuku;
  *   - {@link #TARGET_MEDIA_CENTER}: desenha o card de clima na Home da MediaCenter
  *     (res/raw/com_beantechs_mediacenter_card.js).
  *
- * O fridaserver é único e compartilhado pelos dois; cada alvo tem o seu processo
- * injetor, identificado na linha de comando pelo nome do script — é por isso que
- * desligar um recurso não derruba o outro.
+ * Cada alvo tem o seu processo injetor, identificado na linha de comando pelo nome do
+ * script — é por isso que desligar um recurso não derruba o outro. Não há frida-server:
+ * com `-D local` o frida-inject injeta sozinho, e cada processo Frida a menos é uma
+ * chance a menos de mexer no SELinux no meio do boot (ver o patch no build.yml).
  *
- * Portado (simplificado) do app irmão haval-engine-reverse. Requer os binários arm64
- * `fridaserver` e `fridainject` em res/raw. No repositório eles são placeholders
- * minúsculos; o build do CI substitui pelos binários reais (16.7.19).
+ * Portado (simplificado) do app irmão haval-engine-reverse. Requer o binário arm64
+ * `fridainject` em res/raw. No repositório ele é um placeholder minúsculo; o build do
+ * CI substitui pelo binário real (16.7.19), com a recarga da política do SELinux
+ * desligada.
  */
 public class FridaUtils {
     private static final String TAG = "FridaUtils";
 
-    public static final String FRIDA_SERVER_PATH   = "/data/local/tmp/fridaserver";
     public static final String FRIDA_INJECTOR_PATH = "/data/local/tmp/fridainjector";
+    // Deixado pelas versoes ate 1.27.x, que subiam um frida-server: e morto e apagado
+    // na primeira injecao, senao ficava rodando ate o proximo boot e ocupando ~50 MB.
+    private static final String LEGACY_SERVER_PATH = "/data/local/tmp/fridaserver";
 
     /** Arquivo de controle lido em runtime pelo script da MediaCenter (on/off). */
     public static final String HOME_CARD_CTRL_PATH = "/data/local/tmp/haval_home_card";
@@ -80,18 +84,13 @@ public class FridaUtils {
      */
     static final String WRONG_TARGET_MARK = "ALVO ERRADO";
 
-    /** Teto de espera pelo fridaserver recem-iniciado. */
-    private static final long SERVER_READY_TIMEOUT_MS = 2_500;
-    private static final long SERVER_POLL_MS          = 100;
-
     /** Abaixo disso o arquivo em res/raw é um placeholder, não o binário real. */
     private static final long MIN_REAL_BINARY_BYTES = 100_000L;
 
-    /** true se os binários reais do Frida estão embutidos neste APK. */
+    /** true se o binário real do Frida está embutido neste APK. */
     public static boolean fridaToolsEmbedded() {
         try {
-            return rawResourceSize(R.raw.fridaserver) > MIN_REAL_BINARY_BYTES
-                    && rawResourceSize(R.raw.fridainject) > MIN_REAL_BINARY_BYTES;
+            return rawResourceSize(R.raw.fridainject) > MIN_REAL_BINARY_BYTES;
         } catch (Exception e) {
             return false;
         }
@@ -101,7 +100,7 @@ public class FridaUtils {
     // Temperatura Externa Real (UI) — SystemUI
     // ─────────────────────────────────────────────────────────────
 
-    /** Extrai binários+script, sobe o fridaserver e injeta o hook no SystemUI. */
+    /** Extrai injetor+script e injeta o hook no SystemUI. */
     public static String startAndInject() {
         return inject(TARGET_SYSTEM_UI);
     }
@@ -186,36 +185,27 @@ public class FridaUtils {
     // Mecânica comum
     // ─────────────────────────────────────────────────────────────
 
-    /** Extrai binários+script, garante o fridaserver de pé e injeta no alvo. */
+    /** Extrai injetor+script e injeta no alvo. */
     public static String inject(Target t) {
         if (!Shizuku.pingBinder()) return "Shizuku indisponível";
         if (!fridaToolsEmbedded())
-            return "Binários do Frida ausentes neste APK (placeholder). Use o APK do Release/CI.";
+            return "Binário do Frida ausente neste APK (placeholder). Use o APK do Release/CI.";
         try {
-            if (!extract(R.raw.fridaserver, FRIDA_SERVER_PATH)) return "Falha ao extrair fridaserver";
             if (!extract(R.raw.fridainject, FRIDA_INJECTOR_PATH)) return "Falha ao extrair fridainjector";
             if (!extract(t.scriptRes, t.scriptPath())) return "Falha ao extrair script";
 
             IShizukuService svc = IShizukuService.Stub.asInterface(Shizuku.getBinder());
             // Num unico shell: cada newProcess() custa um fork+binder, e no boot esses
             // milissegundos sao exatamente a janela em que a fileira do OEM aparece.
+            // Sem o patch do SELinux no binario, o permissive e o que deixa o alvo
+            // mapear o agente. `kill $(pidof ...)` e nao `pkill -f`: o -f casaria com
+            // este proprio shell, que tem o nome do server na linha de comando.
             ShizukuUtils.countNewProcess();
             svc.newProcess(new String[]{"/bin/sh", "-c",
-                    "setenforce 0; chmod 755 " + FRIDA_SERVER_PATH + " " + FRIDA_INJECTOR_PATH},
+                    "setenforce 0; chmod 755 " + FRIDA_INJECTOR_PATH
+                            + "; p=$(pidof fridaserver); [ -n \"$p\" ] && kill $p"
+                            + "; rm -f " + LEGACY_SERVER_PATH},
                     null, null).waitFor();
-
-            String running = ShizukuUtils.runCommandAndGetOutput(new String[]{"pidof", "fridaserver"}).trim();
-            if (running.isEmpty()) {
-                ShizukuUtils.countNewProcess();
-                svc.newProcess(new String[]{"/bin/sh", "-c",
-                        "setsid " + FRIDA_SERVER_PATH + " >/dev/null 2>&1 < /dev/null &"}, null, null).waitFor();
-                // Poll em vez de sleep fixo: o server normalmente responde em ~200ms,
-                // e esperar 1,5s sempre custava mais do que o necessario.
-                if (!waitForFridaServer(SERVER_READY_TIMEOUT_MS)) {
-                    Log.w(TAG, "[frida] fridaserver nao respondeu em "
-                            + SERVER_READY_TIMEOUT_MS + "ms, injetando de todo jeito");
-                }
-            }
 
             String pid = pidOf(t);
             if (pid.isEmpty()) return t.processName + " não encontrado (pid vazio)";
@@ -236,16 +226,11 @@ public class FridaUtils {
         }
     }
 
-    /**
-     * Encerra só o injetor deste alvo. O fridaserver é derrubado apenas quando
-     * nenhum outro alvo continua injetado — senão desligar um recurso mataria o
-     * outro junto.
-     */
+    /** Encerra só o injetor deste alvo; o do outro alvo continua de pé. */
     public static String stopTarget(Target t) {
         try {
             ShizukuUtils.runCommandAndGetOutput(new String[]{"pkill", "-f", t.scriptName});
             if (!anyInjectionAlive()) {
-                ShizukuUtils.runCommandAndGetOutput(new String[]{"pkill", "-f", "fridaserver"});
                 return "Frida encerrado (o hook cai no próximo restart de " + t.processName + ")";
             }
             return "Injeção em " + t.processName + " encerrada";
@@ -409,18 +394,6 @@ public class FridaUtils {
             return null;
         }
         return out;
-    }
-
-    /** true assim que `pidof fridaserver` responde, ou false no timeout. */
-    private static boolean waitForFridaServer(long timeoutMs) throws InterruptedException {
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
-            String pid = ShizukuUtils.runCommandAndGetOutput(
-                    new String[]{"pidof", "fridaserver"}).trim();
-            if (!pid.isEmpty()) return true;
-            Thread.sleep(SERVER_POLL_MS);
-        }
-        return false;
     }
 
     private static long rawResourceSize(int resId) throws Exception {
