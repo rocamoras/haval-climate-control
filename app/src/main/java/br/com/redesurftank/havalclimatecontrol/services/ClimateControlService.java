@@ -606,6 +606,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 }
             });
 
+            // O servico de previsao do tempo do OEM nao e usado para nada alem de alimentar
+            // a temperatura da barra (que a injecao no SystemUI substitui pelo sensor real).
+            // Fica SEMPRE desativado, com ou sem a temperatura real ligada.
+            backgroundHandler.post(this::disableWeatherService);
+
             // Configurações — Temperatura Externa Real (UI): registra callback UI → serviço.
             ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(enabled ->
                     backgroundHandler.post(() -> applyRealOutsideTemp(enabled)));
@@ -1155,23 +1160,26 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // Temperatura Externa Real (UI) — injeção Frida no SystemUI
     // ─────────────────────────────────────────────────────────────
 
+    /** Desativa o serviço nativo de previsão do tempo da central. Nunca é reativado.
+     *  Roda no backgroundHandler. */
+    private void disableWeatherService() {
+        ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "disable-user", "--user", "0", WEATHER_PACKAGE_NAME});
+        ShizukuUtils.runCommandAndGetOutput(new String[]{"am", "force-stop", WEATHER_PACKAGE_NAME});
+    }
+
     /** (Des)ativa a exibição da temperatura externa real na barra da central.
      *  Roda no backgroundHandler. */
     private void applyRealOutsideTemp(boolean enabled) {
         realTempEnabled = enabled;
         if (enabled) {
-            // Desativa o serviço nativo de previsão do tempo da central.
-            ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "disable-user", "--user", "0", WEATHER_PACKAGE_NAME});
-            ShizukuUtils.runCommandAndGetOutput(new String[]{"am", "force-stop", WEATHER_PACKAGE_NAME});
             // Injeta o hook que lê o sensor real e repinta a barra.
             String msg = FridaUtils.startAndInject();
             injectedSystemUiPid = FridaUtils.systemUiPid();
             Log.w(TAG, "[realtemp] ativado: " + msg + " (systemui pid=" + injectedSystemUiPid + ")");
         } else {
-            // Para a injeção e reativa o serviço nativo de previsão do tempo.
+            // Para a injeção. O serviço de previsão do tempo continua desativado.
             String msg = FridaUtils.stop();
             injectedSystemUiPid = "";
-            ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "enable", WEATHER_PACKAGE_NAME});
             Log.w(TAG, "[realtemp] desativado: " + msg);
         }
         // O watchdog e compartilhado: reagenda no minimo (ou para, se ninguem mais quer).

@@ -796,7 +796,7 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
         AlertDialog(
             onDismissRequest  = { showHelp = false },
             title             = { Text("Temperatura Externa Real (UI)") },
-            text              = { Text("Ativando essa opção irá desabilitar o serviço nativo da central de previsão do tempo e será mostrado a temperatura externa real.") },
+            text              = { Text("Ativando essa opção será mostrada na barra a temperatura externa real, lida do sensor do carro. O serviço nativo de previsão do tempo da central fica sempre desabilitado; com a opção desligada, a barra mostra \"--\".") },
             confirmButton     = { TextButton(onClick = { showHelp = false }) { Text("OK") } },
             containerColor    = Color(0xFF1E1E1E),
             titleContentColor = HmiFg,
