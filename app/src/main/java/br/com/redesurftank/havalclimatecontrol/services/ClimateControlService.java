@@ -143,7 +143,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // do OEM respondeu a cada um tentando abrir o app desabilitado — 197 stack traces em
     // 12 minutos, no thread principal do SystemUI. Com a janela maior, uma rajada de
     // toques suspende UMA vez e reabilita no fim.
-    private static final long   HVAC_RESUME_DELAY_MS = 2_500;
+    // Hoje isso e so o caminho de reserva: com o hook do SystemUI de pe (guarda do HVAC,
+    // HvacGuardProvider) nenhum `pm` roda. Mesma janela nos dois caminhos.
+    private static final long   HVAC_RESUME_DELAY_MS = HvacGuardProvider.WRITE_WINDOW_MS;
+    // Depois de injetar no SystemUI, o probe confirma a guarda neste ritmo (e so por
+    // GUARD_CONFIRM_TICKS ticks): sem isso a primeira confirmacao esperaria o ciclo
+    // normal de 10s, e ate la as escritas seguem pelo `pm disable`.
+    private static final long   GUARD_CONFIRM_MS     = 2_000;
+    private static final int    GUARD_CONFIRM_TICKS  = 5;
     private static final long   EVAL_DEBOUNCE_MS     = 50;     // coalesce bursts de onDataChanged numa única avaliação
     private static final long   IPTABLES_REFRESH_MS  = 60_000; // re-assert da regra iptables (idempotente, antes 15s)
     private static final long   BOOTSTRAP_BACKOFF_MAX_MS = 30_000;
@@ -217,9 +224,16 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private boolean  isHvacSuspended    = false;
     private Runnable resumeHvacRunnable = null;
 
-    // Temperatura Externa Real (UI) — injeção Frida no SystemUI
+    // SystemUI — injeção Frida permanente: guarda do popup do HVAC + temperatura real.
+    private volatile boolean systemUiBootstrapped = false;
+    /** true quando o Frida esta embutido e o SystemUI deve ficar injetado. */
+    private volatile boolean systemUiWanted  = false;
+    /** Pintura da temperatura externa real (arquivo de controle do script). */
     private volatile boolean realTempEnabled = false;
     private String  injectedSystemUiPid      = "";
+    /** O hook do SystemUI anunciou a guarda: escritas nao precisam mais de `pm disable`. */
+    private volatile boolean hvacGuardArmed  = false;
+    private int     guardConfirmTicks        = 0;
 
     // Card na Home (MediaCenter) — injeção Frida
     private volatile boolean homeCardEnabled    = false;
@@ -496,6 +510,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         // ate o hook entrar, e connectToVehicleService() + iptables adicionam segundos
         // a essa janela. O card so depende do Shizuku e da pref, nao do veiculo.
         backgroundHandler.post(this::bootstrapHomeCard);
+        // A guarda do HVAC tambem: quanto antes armar, menos escritas passam pelo `pm`.
+        backgroundHandler.post(this::bootstrapSystemUi);
         // Mesma logica: a faixa (ou a limpeza do overscan que sobrou) so depende do Shizuku.
         backgroundHandler.post(this::bootstrapClimateStrip);
 
@@ -610,25 +626,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             // a temperatura da barra (que a injecao no SystemUI substitui pelo sensor real).
             // Fica SEMPRE desativado, com ou sem a temperatura real ligada.
             backgroundHandler.post(this::disableWeatherService);
-
-            // Configurações — Temperatura Externa Real (UI): registra callback UI → serviço.
-            ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(enabled ->
-                    backgroundHandler.post(() -> applyRealOutsideTemp(enabled)));
-            // Reaplica o estado PERSISTIDO. Lê direto do climate_ui_prefs porque, no boot
-            // do carro (antes da Activity abrir), o espelho em ClimateStateHolder ainda é
-            // o default false — daí a injeção não acontecia até alternar manualmente.
-            boolean realTempWanted = false;
-            try {
-                realTempWanted = App.getContext()
-                        .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
-                        .getBoolean(KEY_REAL_OUTSIDE_TEMP, false);
-            } catch (Exception e) {
-                Log.w(TAG, "Falha lendo pref real_outside_temp: " + e.getMessage());
-            }
-            if (realTempWanted) {
-                ClimateStateHolder.INSTANCE.setRealOutsideTempEnabled(true);
-                backgroundHandler.post(() -> applyRealOutsideTemp(true));
-            }
 
             // Modo turbo: mesma razao — a avaliacao roda com a tela fechada, entao o
             // espelho tem que vir da pref, nao do default do ClimateStateHolder.
@@ -1059,12 +1056,40 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
      * (ver {@link #applyUiVisibility}), e aqui nao se paga nada. O ciclo por escrita ficou
      * so para o caminho automatico — histerese, curva de conforto, ventilacao dos bancos —
      * que roda com a tela fora e onde o app do OEM pularia na cara do motorista.
+     *
+     * Tudo isso e o caminho de RESERVA. Com a guarda armada (hook do SystemUI, ver
+     * {@link HvacGuardProvider}) a escrita so marca o instante e nenhum `pm` roda: o
+     * hook pergunta ao provider e barra so o popup que for nosso.
      */
     private void sendHvacCommand(String key, String value) throws Exception {
         boolean uiInFront = ClimateStateHolder.INSTANCE.getUiVisible();
-        if (!uiInFront) ensureHvacSuspended(key);
+        boolean guard     = hvacGuardArmed;
+        // Sempre, e antes da escrita: o popup chega logo depois, e com a tela fechando
+        // no meio da janela ele ainda e nosso.
+        HvacGuardProvider.markWrite();
+        if (!uiInFront && !guard) ensureHvacSuspended(key);
         controlService.request("cmd.common.request.set", key, value);
-        if (!uiInFront) scheduleHvacResumption();
+        if (!uiInFront && !guard) scheduleHvacResumption();
+    }
+
+    /**
+     * A guarda do SystemUI armou ou caiu. Roda no backgroundHandler (watchdog).
+     *
+     * Armou: o `pm` deixa de ser necessario, e um pacote que ficou desabilitado pela
+     * reserva volta ao normal agora. Caiu (SystemUI reiniciou, injetor morreu) com a nossa
+     * tela na frente: volta a supressao da sessao ate a guarda armar de novo.
+     */
+    private void setHvacGuardArmed(boolean armed, String why) {
+        if (hvacGuardArmed == armed) return;
+        hvacGuardArmed = armed;
+        HvacGuardProvider.setArmed(armed);
+        PersistentLog.w(TAG, "[guarda] " + (armed ? "armada — sem pm disable daqui em diante"
+                : "desarmada — escritas voltam ao pm disable") + " (" + why + ")");
+        if (armed) {
+            if (isHvacSuspended) resumeHvacNow();
+        } else if (ClimateStateHolder.INSTANCE.getUiVisible() && !isHvacSuspended) {
+            suspendHvacNow();
+        }
     }
 
     /**
@@ -1077,6 +1102,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
      */
     private void applyUiVisibility(boolean visible) {
         if (visible) {
+            // Com a guarda armada o hook ja le a visibilidade direto do provider.
+            if (hvacGuardArmed) return;
             // Sem o `dumpsys` do ensureHvacSuspended: se a NOSSA Activity acabou de entrar
             // em foco, o app do OEM nao pode estar em foreground.
             if (resumeHvacRunnable != null) {
@@ -1167,23 +1194,69 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         ShizukuUtils.runCommandAndGetOutput(new String[]{"am", "force-stop", WEATHER_PACKAGE_NAME});
     }
 
+    /**
+     * Registra o callback da temperatura real, le a pref e injeta no SystemUI. Uma vez por
+     * instancia, no backgroundHandler, assim que o Shizuku esta utilizavel.
+     *
+     * O SystemUI fica injetado SEMPRE que o Frida esta embutido: alem da temperatura, o
+     * script carrega a guarda do popup do HVAC, que e o que dispensa o `pm disable`.
+     * A temperatura real vira so o arquivo de controle que o script le.
+     */
+    private void bootstrapSystemUi() {
+        if (systemUiBootstrapped) return;
+        systemUiBootstrapped = true;
+
+        ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(enabled ->
+                backgroundHandler.post(() -> applyRealOutsideTemp(enabled)));
+        // Lê direto do climate_ui_prefs porque, no boot do carro (antes da Activity
+        // abrir), o espelho em ClimateStateHolder ainda é o default false.
+        boolean realTempWanted = false;
+        try {
+            realTempWanted = App.getContext()
+                    .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_REAL_OUTSIDE_TEMP, false);
+        } catch (Exception e) {
+            Log.w(TAG, "Falha lendo pref real_outside_temp: " + e.getMessage());
+        }
+        realTempEnabled = realTempWanted;
+        if (realTempWanted) ClimateStateHolder.INSTANCE.setRealOutsideTempEnabled(true);
+
+        if (!FridaUtils.fridaToolsEmbedded()) {
+            PersistentLog.w(TAG, "[sysui] Frida ausente neste APK — guarda do HVAC fica no pm disable");
+            return;
+        }
+        systemUiWanted = true;
+        injectSystemUi("boot do servico");
+    }
+
+    /** Injeta (ou re-injeta) no SystemUI. Roda no backgroundHandler. */
+    private void injectSystemUi(String why) {
+        // O injetor anterior e morto pela injecao nova, e com ele o hook: ate o script
+        // novo anunciar a guarda, as escritas voltam ao `pm`.
+        setHvacGuardArmed(false, "re-injecao no SystemUI");
+        FridaUtils.InjectResult r = FridaUtils.injectSystemUi(realTempEnabled);
+        injectedSystemUiPid = r.pid;
+        guardConfirmTicks = 0;
+        PersistentLog.w(TAG, "[sysui] " + why + ": " + r.message
+                + " (temp real=" + realTempEnabled + ")");
+        rearmInjectionWatchdog(Math.min(GUARD_CONFIRM_MS, watchdogIntervalMs));
+    }
+
     /** (Des)ativa a exibição da temperatura externa real na barra da central.
      *  Roda no backgroundHandler. */
     private void applyRealOutsideTemp(boolean enabled) {
         realTempEnabled = enabled;
-        if (enabled) {
-            // Injeta o hook que lê o sensor real e repinta a barra.
-            String msg = FridaUtils.startAndInject();
-            injectedSystemUiPid = FridaUtils.systemUiPid();
-            Log.w(TAG, "[realtemp] ativado: " + msg + " (systemui pid=" + injectedSystemUiPid + ")");
-        } else {
-            // Para a injeção. O serviço de previsão do tempo continua desativado.
-            String msg = FridaUtils.stop();
-            injectedSystemUiPid = "";
-            Log.w(TAG, "[realtemp] desativado: " + msg);
+        if (!systemUiWanted) {
+            Log.w(TAG, "[realtemp] Frida ausente neste APK — nada a fazer");
+            return;
         }
-        // O watchdog e compartilhado: reagenda no minimo (ou para, se ninguem mais quer).
-        rearmInjectionWatchdog(WATCHDOG_MIN_MS);
+        if (injectedSystemUiPid.isEmpty()) {
+            injectSystemUi("temp real " + (enabled ? "ligada" : "desligada"));
+        } else {
+            // O script relê o arquivo a cada 2s; desligar repõe "--" na barra.
+            FridaUtils.setRealTemp(enabled);
+            Log.w(TAG, "[realtemp] " + (enabled ? "ativado" : "desativado"));
+        }
     }
 
     // ─────────────────────────────
@@ -1304,16 +1377,18 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         if (enabled) {
             // Portao anti-reinicio: se o processo da MediaCenter ainda e muito novo, nao
             // ataca agora — o watchdog reintenta no ritmo rapido ate ele amadurecer.
-            if (shouldDeferMediaCenterAttach(FridaUtils.mediaCenterPid())) {
+            // A constante antes do pid: com o portao desligado (0) nao se paga o shell.
+            if (MIN_MEDIACENTER_INJECT_AGE_MS > 0
+                    && shouldDeferMediaCenterAttach(FridaUtils.mediaCenterPid())) {
                 homeCardInjected = false;
                 rearmInjectionWatchdog(HOME_CARD_RETRY_MS);
                 return;
             }
             lastMediaCenterInjectMs = SystemClock.elapsedRealtime();
-            String msg = FridaUtils.startHomeCard();
-            injectedMediaCenterPid = FridaUtils.mediaCenterPid();
-            homeCardInjected = !injectedMediaCenterPid.isEmpty()
-                    && FridaUtils.isHomeCardInjectionAlive();
+            FridaUtils.InjectResult r = FridaUtils.startHomeCard();
+            String msg = r.message;
+            injectedMediaCenterPid = r.pid;
+            homeCardInjected = !r.pid.isEmpty() && r.injectorAlive;
             // Em disco (nao so logcat): o upload de diagnostico nao le logcat, entao sem
             // isto o attach que reinicia a MediaCenter fica invisivel. uptime do device
             // separa "attach no boot" (alvo fragil) de "attach com a central estavel".
@@ -1421,7 +1496,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private void rearmInjectionWatchdog(long delayMs) {
         backgroundHandler.removeCallbacks(injectionWatchdogRunnable);
         watchdogIntervalMs = delayMs;
-        if (!realTempEnabled && !homeCardEnabled) return;
+        if (!systemUiWanted && !homeCardEnabled) return;
         backgroundHandler.postDelayed(injectionWatchdogRunnable, delayMs);
     }
 
@@ -1432,14 +1507,17 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
      * WATCHDOG_MIN_MS a cada re-injecao ou troca de pid. Numa sessao longa parada isso
      * derruba a taxa de fork no shizuku_server de ~24/min para ~2/min — que e o ponto,
      * ja que foi o acumulo desses forks que estourou o heap do server em 29/08/2026.
+     *
+     * Alvo sem processo (pid vazio) nao e injetado: no boot, antes da MediaCenter subir,
+     * cada tick de 1s fazia uma injecao inteira so para descobrir que nao havia pid.
      */
     private void injectionWatchdogTick() {
-        if (!realTempEnabled && !homeCardEnabled) return;
+        if (!systemUiWanted && !homeCardEnabled) return;
 
         long next = watchdogIntervalMs;
         try {
             List<FridaUtils.Target> want = new ArrayList<>(2);
-            if (realTempEnabled) want.add(FridaUtils.TARGET_SYSTEM_UI);
+            if (systemUiWanted)  want.add(FridaUtils.TARGET_SYSTEM_UI);
             if (homeCardEnabled) want.add(FridaUtils.TARGET_MEDIA_CENTER);
             FridaUtils.Target[] targets = want.toArray(new FridaUtils.Target[0]);
 
@@ -1455,15 +1533,28 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             for (int i = 0; i < targets.length; i++) {
                 FridaUtils.TargetStatus st = status[i];
                 if (targets[i] == FridaUtils.TARGET_SYSTEM_UI) {
-                    boolean restarted = !st.pid.isEmpty() && !st.pid.equals(injectedSystemUiPid);
+                    if (st.pid.isEmpty()) {
+                        setHvacGuardArmed(false, "SystemUI sem processo");
+                        continue;
+                    }
+                    boolean restarted = !st.pid.equals(injectedSystemUiPid);
                     if (restarted || !st.injectorAlive) {
-                        Log.w(TAG, "[realtemp] watchdog re-injetando (restart=" + restarted + ")");
-                        FridaUtils.startAndInject();
-                        injectedSystemUiPid = FridaUtils.systemUiPid();
+                        injectSystemUi("watchdog re-injetando (restart=" + restarted
+                                + " injetorVivo=" + st.injectorAlive + ")");
                         changed = true;
+                    } else {
+                        setHvacGuardArmed(st.guardArmed, st.guardArmed
+                                ? "hook confirmado no pid " + st.pid
+                                : "hook nao anunciou a guarda no pid " + st.pid);
                     }
                 } else {
-                    boolean restarted = !st.pid.isEmpty() && !st.pid.equals(injectedMediaCenterPid);
+                    if (st.pid.isEmpty()) {
+                        // MediaCenter ainda nao subiu (ou caiu): nada a injetar. O ritmo
+                        // rapido abaixo reolha em 1s.
+                        homeCardInjected = false;
+                        continue;
+                    }
+                    boolean restarted = !st.pid.equals(injectedMediaCenterPid);
                     // Injetor vivo no processo errado nao e saude: em 2026-09-02 o card
                     // sumiu de vez porque o injetor foi para o com.beantechs.mediacenter
                     // .h5.core e ninguem percebeu. Reinjetar so faz sentido se o pid
@@ -1494,11 +1585,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                                 + " injetorVivo=" + st.injectorAlive
                                 + " alvoErrado=" + st.wrongTarget + ")");
                         lastMediaCenterInjectMs = SystemClock.elapsedRealtime();
-                        FridaUtils.startHomeCard();
-                        injectedMediaCenterPid = FridaUtils.mediaCenterPid();
+                        FridaUtils.InjectResult r = FridaUtils.startHomeCard();
+                        injectedMediaCenterPid = r.pid;
                         // Sem uma segunda ida ao shell so para confirmar: se a injecao
                         // nao pegou, o proximo tick (em 1s) descobre e tenta de novo.
-                        homeCardInjected = !injectedMediaCenterPid.isEmpty();
+                        homeCardInjected = !r.pid.isEmpty();
                         homeCardWrongPid = "";
                         changed = true;
                     } else if (st.wrongTarget) {
@@ -1520,6 +1611,12 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
             next = changed ? WATCHDOG_MIN_MS
                            : Math.min(WATCHDOG_MAX_MS, watchdogIntervalMs * 2);
+            // Guarda ainda nao confirmada depois de uma injecao: olha de novo logo, mas so
+            // por alguns ticks — um hook que nao arma (classe ausente) nao pode virar poll.
+            if (systemUiWanted && !hvacGuardArmed && guardConfirmTicks < GUARD_CONFIRM_TICKS) {
+                guardConfirmTicks++;
+                next = Math.min(next, GUARD_CONFIRM_MS);
+            }
             // MediaCenter ainda nao subiu: volta ao ritmo rapido do boot.
             if (homeCardEnabled && !homeCardInjected) next = HOME_CARD_RETRY_MS;
 

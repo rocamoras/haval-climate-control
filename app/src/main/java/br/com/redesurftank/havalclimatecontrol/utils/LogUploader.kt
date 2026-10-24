@@ -210,6 +210,8 @@ object LogUploader {
             appendLine("binarios embutidos  : ${FridaUtils.fridaToolsEmbedded()}")
             appendLine("systemui pid        : ${FridaUtils.systemUiPid()}")
             appendLine("systemui injetado   : ${FridaUtils.isInjectionAlive()}")
+            appendLine("guarda do HVAC      : ${br.com.redesurftank.havalclimatecontrol.services.HvacGuardProvider.describe()}")
+            appendLine("arquivo temp real   : ${shell(arrayOf("cat", FridaUtils.REAL_TEMP_CTRL_PATH))}")
             appendLine("mediacenter pid     : ${FridaUtils.mediaCenterPid()}")
             // "injetado" sozinho mentiu no log de 2026-09-02: o injetor estava vivo,
             // mas dentro do .h5.core, sem nenhuma das classes do card. Diz as duas

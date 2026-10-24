@@ -72,6 +72,14 @@
             android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
+        <!-- Consultado pelo hook do SystemUI antes de abrir o app de clima do OEM.
+             directBootAware: o servico (e o hook) sobem antes do unlock. -->
+        <provider
+            android:name=".services.HvacGuardProvider"
+            android:authorities="${applicationId}.hvacguard"
+            android:directBootAware="true"
+            android:exported="true" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.provider"
