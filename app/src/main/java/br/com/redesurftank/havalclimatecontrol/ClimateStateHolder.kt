@@ -8,6 +8,8 @@ import br.com.redesurftank.havalclimatecontrol.utils.PersistentLog
 
 object ClimateStateHolder {
 
+    private const val TAG = "ClimateStateHolder"
+
     var vehicleConnected      by mutableStateOf(false)
     var autoControlEnabled    by mutableStateOf(true)
     var autoEnable       by mutableStateOf("--")
@@ -19,10 +21,27 @@ object ClimateStateHolder {
 
     // Toggle properties
     var acEnable              by mutableStateOf("--")
+    var acMaxEnable           by mutableStateOf("--")
     var frontDefrostEnable    by mutableStateOf("--")
+    var rearDefrostEnable     by mutableStateOf("--")
     var heatingEnable         by mutableStateOf("--")
     var intelligentSwitch     by mutableStateOf("--")
     var settingLimitEnable    by mutableStateOf("--")
+
+    // Temperatura
+    var passengerTemp    by mutableStateOf("--")
+    var syncEnable       by mutableStateOf("--")
+
+    // Ar
+    var fanSpeed         by mutableStateOf("--")
+    var fanSpeedRange    by mutableStateOf("--")
+    var blowerMode       by mutableStateOf("--")
+    var cycleMode        by mutableStateOf("--")
+
+    // Qualidade do ar e configurações do HVAC
+    var aqsEnable            by mutableStateOf("--")
+    var anionEnable          by mutableStateOf("--")
+    var autoDefrostEnable    by mutableStateOf("--")
 
     // EV properties
     var wadeModeEnable        by mutableStateOf("--")
@@ -34,8 +53,8 @@ object ClimateStateHolder {
     var comfortCurve          by mutableStateOf("--")
 
     // ── Telemetria do sensor de PM2.5 ────────────────────────────────────────
-    // Alimentada por updateHvacExtras (ou seja, pelo serviço), não pela tela — assim
-    // o histórico continua sendo coletado com a tela de debug fechada.
+    // Alimentada por updateFromCache (ou seja, pelo serviço), não pela tela — assim
+    // o histórico continua sendo coletado com a tela fechada.
 
     data class Pm25Sample(val value: Int, val atMs: Long)
 
@@ -77,6 +96,31 @@ object ClimateStateHolder {
     // Configurações — Card na Home da MediaCenter. Espelho lido pelo serviço.
     var homeCardEnabled by mutableStateOf(false)
 
+    // ── Modo turbo ───────────────────────────────────────────────────────────
+    // Cabine acima do limiar: o serviço tira o HVAC do AUTO e põe o ventilador no
+    // máximo; quando a cabine chega ao alvo, devolve o AUTO. Os dois primeiros são
+    // configuração (espelho do climate_ui_prefs, populado pelo serviço no connect para
+    // valer antes da Activity abrir); turboActive é estado, escrito só pelo serviço.
+    const val TURBO_THRESHOLD_DEFAULT = 38
+    const val TURBO_THRESHOLD_MIN     = 30
+    const val TURBO_THRESHOLD_MAX     = 50
+
+    var turboEnabled   by mutableStateOf(true)
+    var turboThreshold by mutableStateOf(TURBO_THRESHOLD_DEFAULT)
+    var turboActive    by mutableStateOf(false)
+
+    /**
+     * Pede ao serviço uma avaliação fora de hora. A avaliação normal só roda quando o
+     * carro publica alguma propriedade — sem isto, desligar o turbo (ou o controle
+     * automático) no meio de uma sessão de turbo deixaria o HVAC fora do AUTO até a
+     * próxima leitura da cabine.
+     */
+    @Volatile var onEvaluateRequest: Runnable? = null
+
+    fun requestEvaluation() {
+        onEvaluateRequest?.run()
+    }
+
     /** Callback UI → serviço para as opções que dependem de injeção Frida.
      *  fun interface para permitir lambda de Java (o serviço). */
     fun interface ToggleCallback {
@@ -85,6 +129,28 @@ object ClimateStateHolder {
 
     @Volatile var onRealOutsideTempToggle: ToggleCallback? = null
     @Volatile var onHomeCardToggle: ToggleCallback? = null
+    /** Faixa de clima fixa (overlay + overscan). A pref fica em climate_control_prefs,
+     *  device-protected, porque é ela que decide a limpeza do overscan no boot travado. */
+    @Volatile var onClimateStripToggle: ToggleCallback? = null
+
+    /**
+     * Avisa o serviço quando a nossa Activity entra e sai de foco.
+     *
+     * Serve para o serviço manter o HVAC do OEM desabilitado durante a sessão inteira,
+     * em vez de desabilitar e reabilitar a cada escrita: enquanto a nossa tela está na
+     * frente, é ela que precisa de proteção contra o app do OEM roubar o foco.
+     */
+    @Volatile var onUiVisibilityChange: ToggleCallback? = null
+
+    /** Espelho do último estado enviado, para o serviço decidir sem consultar a UI. */
+    @Volatile var uiVisible: Boolean = false
+        private set
+
+    fun setUiVisible(visible: Boolean) {
+        if (uiVisible == visible) return
+        uiVisible = visible
+        onUiVisibilityChange?.onToggle(visible)
+    }
 
     // Callbacks invocados pelo serviço (via mainHandler) quando uma mudança externa é detectada
     @Volatile var onExternalVentChange:    ((String) -> Unit)? = null
@@ -117,57 +183,68 @@ object ClimateStateHolder {
     @JvmField @Volatile var commandCallback: CommandCallback? = null
 
     fun sendCommand(key: String, value: String) {
+        // Ficou do diagnostico do botao do banco: separa "o clique nao chegou" de
+        // "chegou e o servico engoliu". Foi esta linha, ao lado do log do proprio botao,
+        // que mostrou o lambda de clique enxergando estado velho.
+        PersistentLog.w(TAG, "UI pediu " + key + " = " + value +
+                (if (commandCallback == null) " — SEM callback do servico!" else ""))
         commandCallback?.onCommand(key, value)
     }
 
-    fun updateVehicleData(
-        connected: Boolean,
-        inside: String?,
-        driver: String?,
-        power: String?,
-        auto: String?,
-        outside: String?
-    ) {
+    /**
+     * Espelha o cache inteiro do serviço nos campos observáveis.
+     *
+     * Substitui os antigos updateVehicleData/updateHvacExtras/updateSeatData, que eram
+     * posicionais: com 31 propriedades, trocar dois argumentos de lugar viraria um bug
+     * silencioso que só aparece na tela. Aqui a associação é pela chave.
+     */
+    fun updateFromCache(connected: Boolean, cache: Map<String, String?>) {
+        fun v(key: String) = cache[key] ?: "--"
+
         vehicleConnected = connected
-        insideTemp       = inside   ?: "--"
-        outsideTemp      = outside  ?: "--"
-        driverTemp       = driver   ?: "--"
-        powerMode        = power    ?: "--"
-        autoEnable       = auto     ?: "--"
+
+        insideTemp   = v(CarProps.INSIDE_TEMP)
+        outsideTemp  = v(CarProps.OUTSIDE_TEMP)
+        powerMode    = v(CarProps.POWER_MODE)
+        autoEnable   = v(CarProps.AUTO_ENABLE)
+
+        acEnable           = v(CarProps.AC_ENABLE)
+        acMaxEnable        = v(CarProps.ACMAX_ENABLE)
+        heatingEnable      = v(CarProps.HEATING)
+        intelligentSwitch  = v(CarProps.INTELLIGENT_SWITCH)
+
+        driverTemp    = v(CarProps.DRIVER_TEMP)
+        passengerTemp = v(CarProps.PASS_TEMP)
+        syncEnable    = v(CarProps.SYNC_ENABLE)
+
+        fanSpeed      = v(CarProps.FAN_SPEED)
+        fanSpeedRange = v(CarProps.FAN_SPEED_RANGE)
+        blowerMode    = v(CarProps.BLOWER_MODE)
+        cycleMode     = v(CarProps.CYCLE_MODE)
+
+        frontDefrostEnable = v(CarProps.FRONT_DEFROST)
+        rearDefrostEnable  = v(CarProps.REAR_DEFROST)
+
+        aqsEnable   = v(CarProps.AQS_ENABLE)
+        anionEnable = v(CarProps.ANION_ENABLE)
+
+        comfortCurve         = v(CarProps.COMFORT_CURVE)
+        settingLimitEnable   = v(CarProps.LIMIT_ENABLE)
+        autoDefrostEnable    = v(CarProps.AUTO_DEFROST)
+        frontTempRange       = v(CarProps.FRONT_TEMP_RANGE)
+        intelligentTempRange = v(CarProps.INTELLIGENT_TEMP_RANGE)
+
+        driverSeatVentLevel    = v(CarProps.DRIVER_SEAT_VENT)
+        passengerSeatVentLevel = v(CarProps.PASSENGER_SEAT_VENT)
+
+        wadeModeEnable = v(CarProps.WADE_MODE)
+
+        pm25Value = v(CarProps.PM25)
+        recordPm25(cache[CarProps.PM25])
     }
 
-    fun updateHvacExtras(
-        acEn: String?,
-        frontDefrost: String?,
-        heating: String?,
-        intSwitch: String?,
-        limitEn: String?,
-        frontTRange: String?,
-        intTRange: String?,
-        pm25: String?,
-        comfort: String?,
-        wadeMode: String? = null
-    ) {
-        acEnable             = acEn         ?: "--"
-        frontDefrostEnable   = frontDefrost ?: "--"
-        heatingEnable        = heating      ?: "--"
-        intelligentSwitch    = intSwitch    ?: "--"
-        settingLimitEnable   = limitEn      ?: "--"
-        frontTempRange       = frontTRange  ?: "--"
-        intelligentTempRange = intTRange    ?: "--"
-        pm25Value            = pm25         ?: "--"
-        comfortCurve         = comfort      ?: "--"
-        wadeModeEnable       = wadeMode     ?: "--"
-        recordPm25(pm25)
-    }
-
-    fun updateSeatData(
-        driverVent    : String?,
-        passengerVent : String?
-    ) {
-        driverSeatVentLevel    = driverVent    ?: "--"
-        passengerSeatVentLevel = passengerVent ?: "--"
-    }
+    /** Serviço caiu ou desconectou: tudo volta para "--" e o indicador de conexão apaga. */
+    fun clearVehicleData() = updateFromCache(false, emptyMap())
 
     /** A lista em memória é só o que a tela mostra; o espelho em disco é o que
      *  sobrevive a um reinício e permite reconstruir o que o app fez antes de cair. */

@@ -25,11 +25,36 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      # O canal sai da branch, nao de um valor commitado: build.gradle.kts guarda
+      # sempre a versao limpa, e a branch preview reescreve o versionName para
+      # "<versao>-preview.<n>" so na hora de compilar. Como "-preview.N" ordena
+      # ANTES de "<versao>" no semver, quem esta no preview cai sozinho no estavel
+      # quando ele sai -- e nunca o contrario.
       - name: Get version from build.gradle.kts
         id: get_version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           BUILD_NUMBER=$(grep -oP 'versionCode = \K[0-9]+' app/build.gradle.kts)
+          if [ "${{ github.ref_name }}" = "preview" ]; then
+            # Contador proprio, sequencial por versao base e comecando em 2.
+            # github.run_number e compartilhado com os builds do master, entao a
+            # sequencia pularia (preview.7, depois preview.11) e nao diria nada a
+            # quem testa. Aqui o proximo numero sai do maior prerelease ja publicado
+            # para ESTA versao base; sem nenhum, comeca em 2.
+            # grep -F casa string literal: os pontos da versao nao viram coringa,
+            # que era o bug do escape manual (v1x22x1-preview.99 casava com 1.22.1).
+            PREFIX="v${VERSION}-preview."
+            LAST=$(gh release list --limit 100 --json tagName --jq ".[].tagName" \
+                   | grep -F "$PREFIX" | sed "s|^${PREFIX}||" \
+                   | grep -E "^[0-9]+$" | sort -n | tail -1)
+            VERSION="${VERSION}-preview.$(( ${LAST:-1} + 1 ))"
+            sed -i "s/versionName = \".*\"/versionName = \"${VERSION}\"/" app/build.gradle.kts
+            echo "CHANNEL=preview" >> $GITHUB_OUTPUT
+          else
+            echo "CHANNEL=stable" >> $GITHUB_OUTPUT
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
           echo "Detected version: $VERSION (versionCode: $BUILD_NUMBER)"
@@ -38,19 +63,31 @@ jobs:
         run: |
           echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > app/release.keystore
 
-      - name: Fetch Frida 16.x binaries (arm64) into res/raw
+      - name: Fetch Frida 16.x injector (arm64) into res/raw
         run: |
           # Frida 17 removeu o bridge global `Java` (virou módulo externo). Usamos
           # 16.7.19 — scripts crus com Java.perform continuam funcionando.
           FV=16.7.19
           BASE="https://github.com/frida/frida/releases/download/${FV}"
-          curl -fL -o fs.xz "${BASE}/frida-server-${FV}-android-arm64.xz"
+          # So o frida-inject: com `-D local` ele injeta sozinho, sem frida-server.
           curl -fL -o fi.xz "${BASE}/frida-inject-${FV}-android-arm64.xz"
-          xz -d fs.xz && xz -d fi.xz
-          mv fs app/src/main/res/raw/fridaserver
+          xz -d fi.xz
+          # Desliga a recarga da politica do SELinux. A cada start, o Frida le
+          # /sys/fs/selinux/policy, acrescenta as regras dele e grava tudo de volta em
+          # /sys/fs/selinux/load — um reload da politica inteira no meio do boot, que
+          # derrubava o system_server (servicemanager devolvendo null para "alarm" e o
+          # init recusando setprop durante o reload). frida_selinux_patch_policy() sai
+          # calado quando o arquivo da politica nao existe, entao basta apontar os dois
+          # caminhos para nomes inexistentes (mesmo tamanho, com o \0 junto para nao
+          # pegar prefixo). A central roda permissive (setenforce 0 no FridaUtils), e o
+          # setfilecon para frida_file que falha por falta do tipo e ignorado pelo Frida.
+          perl -0777 -pi -e '$n = s{/sys/fs/selinux/policy\0}{/sys/fs/selinux/policX\0}g; $m = s{/sys/fs/selinux/load\0}{/sys/fs/selinux/loaX\0}g; die "patch SELinux: policy=$n load=$m (esperado 1 e 1)\n" unless $n == 1 && $m == 1' fi
+          if grep -a -q -e '/sys/fs/selinux/policy' -e '/sys/fs/selinux/load' fi; then
+            echo "patch SELinux nao pegou"; exit 1
+          fi
           mv fi app/src/main/res/raw/fridainject
-          chmod 644 app/src/main/res/raw/fridaserver app/src/main/res/raw/fridainject
-          ls -la app/src/main/res/raw/fridaserver app/src/main/res/raw/fridainject
+          chmod 644 app/src/main/res/raw/fridainject
+          ls -la app/src/main/res/raw/fridainject
 
       - name: Build release APK
         env:
@@ -78,13 +115,22 @@ jobs:
           path: ${{ env.APK_NAME }}
           retention-days: 30
 
-      # Push em master/preview: publica a Release normalmente (fluxo de update real)
+      # Push em master/preview: publica a Release normalmente (fluxo de update real).
+      # Na preview a release sai marcada como prerelease, e /releases/latest -- o
+      # endpoint que o app estavel consulta -- por definicao NUNCA devolve um
+      # prerelease. E essa flag, e nao o sufixo do nome, que esconde o build de
+      # preview do canal estavel.
       - name: Create git tag and GitHub Release
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v${{ steps.get_version.outputs.VERSION }}"
+          if [ "${{ steps.get_version.outputs.CHANNEL }}" = "preview" ]; then
+            PRERELEASE="--prerelease"
+          else
+            PRERELEASE=""
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # Create local tag (ignore error if it already exists)
@@ -92,7 +138,7 @@ jobs:
           # Push tag to GitHub (ignore error if already pushed)
           git push origin "$TAG" 2>/dev/null || echo "Tag $TAG already pushed"
           # Create release, or just upload the APK if the release already exists
-          gh release create "$TAG" \
+          gh release create "$TAG" $PRERELEASE \
             --title "haval-climate-control-${{ steps.get_version.outputs.VERSION }}" \
             --generate-notes \
             app/build/outputs/apk/release/app-release.apk \
