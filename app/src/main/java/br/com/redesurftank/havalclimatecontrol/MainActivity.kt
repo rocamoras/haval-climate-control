@@ -657,20 +657,20 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 HelpDot { showCardHelp = true }
             }
 
-            OemRow("Faixa de clima fixa\n(protótipo)") {
+            OemRow("Faixa de clima\n(protótipo)") {
                 OemSeg(listOf("Desl.", "Lig."), if (climateStripEnabled) 1 else 0, 400.dp) { i ->
                     val enabled = i == 1
                     climateStripEnabled = enabled
-                    // commit, nao apply: a limpeza do overscan no boot decide por esta pref,
-                    // e a central costuma ser desligada logo depois de mexer na tela.
+                    // commit, nao apply: o servico le esta pref no boot travado, e a central
+                    // costuma ser desligada logo depois de mexer na tela.
                     servicePrefs.edit().putBoolean(KEY_CLIMATE_STRIP, enabled).commit()
                     state.onClimateStripToggle?.onToggle(enabled)
                 }
             }
             Text(
-                "Reserva uma faixa no rodapé da tela com os controles do clima, visível por cima " +
-                    "de qualquer app. No Android Auto o rodapé da imagem fica escondido atrás da " +
-                    "faixa (o AA não se redimensiona). Não use junto com o AutoPanel.",
+                "Deslize de baixo para cima a partir da borda inferior da tela para abrir os " +
+                    "controles do clima por cima de qualquer app, inclusive o Android Auto. Some " +
+                    "sozinha depois de 5 s sem toque. O botão da casa volta para a tela inicial.",
                 fontSize = 18.sp, color = OemInk3,
                 modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
             )

@@ -1221,16 +1221,16 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     }
 
     // ─────────────────────────────
-    // Faixa de clima fixa — overlay + wm overscan
+    // Faixa de clima flutuante — overlay que abre com deslize de baixo para cima
     // ─────────────────────────────
 
     /**
-     * Registra o callback da UI e reconcilia o overscan com a pref. Roda uma vez por
-     * instancia do servico, no backgroundHandler, assim que o Shizuku esta utilizavel.
+     * Registra o callback da UI e aplica a pref. Roda uma vez por instancia do servico,
+     * no backgroundHandler, assim que o Shizuku esta utilizavel.
      *
-     * Com a pref desligada e a limpeza do boot: o overscan sobrevive ao reboot, entao uma
-     * faixa que ficou reservada (app que caiu, versao anterior, pref desligada com o
-     * servico morto) deixaria uma tarja preta em todas as telas ate alguem desfazer.
+     * A limpeza do overscan roda sempre, com a faixa ligada ou nao: a faixa nao reserva
+     * mais o rodape, e a reserva que a 1.27.0 deixou sobrevive ao reboot — sem isto ficaria
+     * uma tarja preta em todas as telas. So desfaz o que estiver marcado como nosso.
      */
     private void bootstrapClimateStrip() {
         if (climateStripBootstrapped) return;
@@ -1239,14 +1239,12 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         ClimateStateHolder.INSTANCE.setOnClimateStripToggle(enabled ->
                 backgroundHandler.post(() -> applyClimateStrip(enabled)));
 
+        OverscanUtils.clearIfOurs("faixa nao reserva mais o rodape");
+
         boolean wanted = App.getDeviceProtectedContext()
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getBoolean(KEY_CLIMATE_STRIP, false);
-        if (wanted) {
-            applyClimateStrip(true);
-        } else {
-            OverscanUtils.clearIfOurs("boot com a faixa desligada");
-        }
+        if (wanted) applyClimateStrip(true);
     }
 
     /** (Des)ativa a faixa. Roda no backgroundHandler; a janela vai para a main. */
@@ -1259,19 +1257,15 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             if (!r.ok()) {
                 PersistentLog.e(TAG, "[faixa] appop SYSTEM_ALERT_WINDOW falhou: " + r.describeFailure());
             }
-            // Overscan ANTES da janela: o overlay mede a propria posicao logo depois de
-            // entrar, e precisa medir com o frame ja encolhido.
-            OverscanUtils.applyBottom(ClimateStripOverlay.STRIP_HEIGHT_PX);
             mainHandler.post(() -> {
                 if (!isServiceRunning) return;
                 if (climateStrip == null) climateStrip = new ClimateStripOverlay(this);
-                climateStrip.show();
+                climateStrip.install();
             });
         } else {
             mainHandler.post(() -> {
-                if (climateStrip != null) climateStrip.hide();
+                if (climateStrip != null) climateStrip.uninstall();
             });
-            OverscanUtils.clearIfOurs("faixa desligada");
         }
     }
 
@@ -1551,10 +1545,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         backgroundHandler.removeCallbacks(injectionWatchdogRunnable);
         ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(null);
         ClimateStateHolder.INSTANCE.setOnClimateStripToggle(null);
-        // Remove so a janela; o overscan fica. onDestroy vem quase sempre de restart(), e
-        // a instancia nova reaplica em ~1s — limpar aqui faria todo app se rediagramar
-        // duas vezes. Se o servico nao voltar, a limpeza do proximo boot resolve.
-        if (climateStrip != null) climateStrip.hide();
+        // As janelas nao podem sobreviver a instancia: a nova, depois de um restart(), instala
+        // as suas — e as velhas ficariam orfas, pegando toque na borda de baixo.
+        if (climateStrip != null) climateStrip.uninstall();
         if (handlerThread != null) handlerThread.quitSafely();
         isServiceRunning = false;
         Shizuku.removeBinderReceivedListener(binderReceivedListener);
