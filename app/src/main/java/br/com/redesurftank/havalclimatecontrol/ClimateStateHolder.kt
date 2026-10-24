@@ -42,9 +42,6 @@ object ClimateStateHolder {
     var aqsEnable            by mutableStateOf("--")
     var anionEnable          by mutableStateOf("--")
     var autoDefrostEnable    by mutableStateOf("--")
-    var fragranceStatus        by mutableStateOf("--")
-    var fragranceConcentration by mutableStateOf("--")
-    var fragranceType          by mutableStateOf("--")
 
     // EV properties
     var wadeModeEnable        by mutableStateOf("--")
@@ -236,10 +233,6 @@ object ClimateStateHolder {
         autoDefrostEnable    = v(CarProps.AUTO_DEFROST)
         frontTempRange       = v(CarProps.FRONT_TEMP_RANGE)
         intelligentTempRange = v(CarProps.INTELLIGENT_TEMP_RANGE)
-
-        fragranceStatus        = v(CarProps.FRAGRANCE_STATUS)
-        fragranceConcentration = v(CarProps.FRAGRANCE_CONCENTRATION)
-        fragranceType          = v(CarProps.FRAGRANCE_TYPE)
 
         driverSeatVentLevel    = v(CarProps.DRIVER_SEAT_VENT)
         passengerSeatVentLevel = v(CarProps.PASSENGER_SEAT_VENT)
