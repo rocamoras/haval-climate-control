@@ -367,7 +367,6 @@ private fun ClimateStrip(onHome: () -> Unit, onOpenApp: () -> Unit) {
     val s = ClimateStateHolder
     val fanMax   = intOf(s.fanSpeedRange, 7).coerceAtLeast(1)
     val fanValue = intOf(s.fanSpeed, 0).coerceIn(0, fanMax)
-    val syncOn   = s.syncEnable == "1"
 
     Row(
         modifier = Modifier.fillMaxSize().background(StripScrim).padding(horizontal = 24.dp, vertical = 6.dp),
@@ -381,9 +380,9 @@ private fun ClimateStrip(onHome: () -> Unit, onOpenApp: () -> Unit) {
             Icon(Icons.Rounded.Home, contentDescription = "Tela inicial", tint = OemInk, modifier = Modifier.size(38.dp))
         }
 
+        // Com SYNC ligado o carro espelha o outro lado sozinho, como no OEM.
         TempStepper("MOTORISTA", s.driverTemp) { v ->
             s.sendCommand(CarProps.DRIVER_TEMP, tempCmd(v))
-            if (syncOn) s.sendCommand(CarProps.PASS_TEMP, tempCmd(v))
         }
 
         Row(
@@ -428,7 +427,6 @@ private fun ClimateStrip(onHome: () -> Unit, onOpenApp: () -> Unit) {
 
         TempStepper("PASSAGEIRO", s.passengerTemp) { v ->
             s.sendCommand(CarProps.PASS_TEMP, tempCmd(v))
-            if (syncOn) s.sendCommand(CarProps.DRIVER_TEMP, tempCmd(v))
         }
     }
 }

@@ -62,16 +62,6 @@ public final class CarProps {
     public static final String LIMIT_ENABLE    = "car.hvac.setting.limit_enable";
     public static final String AUTO_DEFROST    = "car.hvac.setting.auto_defrost_enable";
 
-    // ── fragrância ────────────────────────────────────────────────────────────
-    // Namespace proprio: car.fragrance.*, NAO car.basic.fragrance_* (que existe no
-    // catalogo do app-tool mas o HVAC OEM nunca le). Confirmado no
-    // HVACVehicleControlManager: getFragranceSwitchPower/setFragrancePower/setFragranceType.
-    public static final String FRAGRANCE_STATUS        = "car.fragrance.status";
-    /** Nivel 0..3. E o que o botao "Fragrancia" do OEM escreve (setFragrancePower). */
-    public static final String FRAGRANCE_CONCENTRATION = "car.fragrance.concentration_status";
-    /** Frasco selecionado (setFragranceType). */
-    public static final String FRAGRANCE_TYPE          = "car.fragrance.cur_channel_type";
-
     // ── bancos ────────────────────────────────────────────────────────────────
     public static final String DRIVER_SEAT_VENT    = "car.comfort_setting.driver_seat_ventilation_level";
     public static final String PASSENGER_SEAT_VENT = "car.comfort_setting.passenger_seat_ventilation_level";
@@ -87,7 +77,6 @@ public final class CarProps {
         FAN_SPEED, FAN_SPEED_RANGE, BLOWER_MODE, CYCLE_MODE, FRONT_DEFROST, REAR_DEFROST,
         PM25, AQS_ENABLE, ANION_ENABLE,
         COMFORT_CURVE, LIMIT_ENABLE, AUTO_DEFROST,
-        FRAGRANCE_STATUS, FRAGRANCE_CONCENTRATION, FRAGRANCE_TYPE,
         DRIVER_SEAT_VENT, PASSENGER_SEAT_VENT,
         WADE_MODE,
     };

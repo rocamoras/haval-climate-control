@@ -249,19 +249,20 @@ fun OemClimateScreen(
             }
 
             // ── temperaturas ──────────────────────────────────────────────────
+            // Com SYNC ligado o OEM grava SO o lado tocado (`setTempSync`) e quem espelha
+            // no outro lado e o carro. Gravar o passageiro tambem podia ser lido pelo
+            // carro como "o passageiro mexeu" e derrubar o sync.
             OemTempScroll(
                 value = tempOf(s.driverTemp, 22f), caption = "motorista",
                 modifier = Modifier.absoluteOffset(250.dp, 173.dp),
             ) { v ->
                 s.sendCommand(CarProps.DRIVER_TEMP, tempCmd(v))
-                if (s.isOn(s.syncEnable)) s.sendCommand(CarProps.PASS_TEMP, tempCmd(v))
             }
             OemTempScroll(
                 value = tempOf(s.passengerTemp, 22f), caption = "passageiro",
                 modifier = Modifier.absoluteOffset(1282.dp, 173.dp),
             ) { v ->
                 s.sendCommand(CarProps.PASS_TEMP, tempCmd(v))
-                if (s.isOn(s.syncEnable)) s.sendCommand(CarProps.DRIVER_TEMP, tempCmd(v))
             }
 
             // Unico botao da tela com DOIS glifos: o OEM troca o desenho, nao so a cor —
@@ -274,20 +275,9 @@ fun OemClimateScreen(
                 contentDescription = "Sincronizar temperaturas",
                 modifier = Modifier.absoluteOffset(283.dp, 438.dp),
             ) {
-                val turningOn = !syncOn
-                // Igualar ANTES de ligar o flag, e escrever os DOIS lados.
-                //
-                // O OEM tem um `setTempSync` separado que grava `driver_temperature` e
-                // `pass_temperature` juntos, e o `setSync` so cuida do flag. A tela fazia
-                // o inverso — ligava o flag e so depois copiava a temperatura para o
-                // passageiro — e o carro pode estar recusando o flag enquanto as duas
-                // zonas divergem. E hipotese, nao medicao: nenhum log ate hoje tem uma
-                // escrita de `sync_enable = 1` para comparar.
-                if (turningOn) {
-                    s.sendCommand(CarProps.DRIVER_TEMP, s.driverTemp)
-                    s.sendCommand(CarProps.PASS_TEMP, s.driverTemp)
-                }
-                s.sendCommand(CarProps.SYNC_ENABLE, if (turningOn) "1" else "0")
+                // Igual ao `syncClick` do OEM: so alterna o flag. Igualar as zonas fica
+                // por conta do carro.
+                s.sendCommand(CarProps.SYNC_ENABLE, if (syncOn) "0" else "1")
             }
 
             // ── ventilador ────────────────────────────────────────────────────
