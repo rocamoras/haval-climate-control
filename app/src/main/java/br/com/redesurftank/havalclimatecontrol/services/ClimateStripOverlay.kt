@@ -133,11 +133,14 @@ class ClimateStripOverlay(private val context: Context) {
 
         val o = OverlayOwner().also { it.start() }
         val compose = ComposeView(context).apply {
-            setViewTreeLifecycleOwner(o)
-            setViewTreeSavedStateRegistryOwner(o)
             setContent { ClimateStrip(onHome = ::goHome, onOpenApp = ::openApp) }
         }
+        // Os owners vão na RAIZ da janela, não na ComposeView: o recomposer da janela é
+        // criado a partir do rootView e procura o lifecycle dali para cima. Na ComposeView
+        // filha ele não acha, e o processo inteiro cai no primeiro desenho da faixa.
         val b = BarFrame(context).apply {
+            setViewTreeLifecycleOwner(o)
+            setViewTreeSavedStateRegistryOwner(o)
             addView(compose, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             translationY = STRIP_HEIGHT_PX.toFloat()
