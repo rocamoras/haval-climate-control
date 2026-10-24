@@ -43,6 +43,19 @@
  * Controle em runtime por /data/local/tmp/haval_home_card:
  *   "on"  -> fileira esvaziada e içada, título escondido, card desenhado
  *   "off" (ou arquivo ausente) -> restaura fileira, margem e título originais
+ *
+ * ── segundo card: ciclo automático do haval-ev-manager ──────────────────────
+ * Este agente é o ÚNICO no processo da MediaCenter. O haval-ev-manager já tentou
+ * ter o seu (v1.7.0 dele) e derrubou o ART em campo: SIGSEGV em MterpInvokeVirtual
+ * com dois agentes hookando os mesmos ArtMethod e dois watchdogs fazendo pkill +
+ * reinjetar a cada 10s. Por isso o card dele é desenhado AQUI, e a única coisa que
+ * vem de lá é uma linha de texto em /data/local/tmp/haval_ev_home_card:
+ *
+ *   conn=1;auto=1;phase=80;soc=62;model=0;ts=1761300000
+ *
+ * O arquivo é o contrato entre os dois apps — mexer no formato exige mexer em
+ * HomeCardState.java do haval-ev-manager. Linha ausente, ilegível ou com `ts` mais
+ * velho que EV_MAX_AGE segundos => o card do ciclo some e fica só o de clima.
  */
 "use strict";
 
@@ -57,6 +70,14 @@ Java.perform(function () {
     var CARD_TAG = "hcc-home-card";
     var CP_CARD  = 590;          // CP virtual: precisa cair em 501..600 p/ o onClick do OEM
     var ROW_TOP  = 100;          // topMargin da fileira com o titulo escondido
+
+    // card do ciclo automático (dados do haval-ev-manager)
+    var EV_STATE    = "/data/local/tmp/haval_ev_home_card";
+    var EV_PKG      = "br.com.redesurftank.havalevmanager";
+    var EV_CARD_TAG = "hcc-ev-card";
+    var CP_EV       = 591;       // segundo CP virtual, também dentro de 501..600
+    var EV_MAX_AGE  = 90;        // segundos: linha mais velha que isto é descartada
+    var GAP         = 24;        // espaço entre os dois cards
 
     // ── o processo e o certo? ───────────────────────────────────────────────
     // O OEM tem tres pacotes com prefixo com.beantechs.mediacenter (.h5.core e
@@ -100,6 +121,7 @@ Java.perform(function () {
     var PCap      = Java.use("android.graphics.Paint$Cap");
     var PAlign    = Java.use("android.graphics.Paint$Align");
     var RectF     = Java.use("android.graphics.RectF");
+    var PathCls   = Java.use("android.graphics.Path");
     var Typeface  = Java.use("android.graphics.Typeface");
     var LinGrad   = Java.use("android.graphics.LinearGradient");
     var TileMode  = Java.use("android.graphics.Shader$TileMode");
@@ -141,6 +163,12 @@ Java.perform(function () {
     var C_ACCENT_SOFT = 0x1F22C55E | 0;
     var C_ACCENT_EDGE = 0x6622C55E | 0;
     var C_BORDER      = 0x1AFFFFFF | 0;
+    // âmbar da fase USO e vermelho da bateria no fundo — mesmos tokens do HMI do
+    // haval-ev-manager, para os dois cards lerem como um sistema só.
+    var C_AMBER       = 0xFFF59E0B | 0;
+    var C_AMBER_SOFT  = 0x1FF59E0B | 0;
+    var C_AMBER_EDGE  = 0x66F59E0B | 0;
+    var C_RED         = 0xFFEF4444 | 0;
 
     // ── geometria (densidade 1.0 nesta tela: 1dp = 1px) ─────────────────────
     // 330px úteis com a fileira içada; 300 deixa 30 de folga antes de "Mídia local".
@@ -191,6 +219,71 @@ Java.perform(function () {
 
     function stateSig(s) {
         return [s.on, s.ac, s.auto, (s.temp === null ? "x" : Math.round(s.temp)), s.fan].join("|");
+    }
+
+    // ── estado do ciclo automático (vem do haval-ev-manager) ────────────────
+
+    /** Lê a primeira linha de um arquivo de texto, ou null. */
+    function readLine(path) {
+        try {
+            var f = JFile.$new(path);
+            if (!f.exists()) return null;
+            var br = BufReader.$new(FileReader.$new(f));
+            var l  = br.readLine();
+            br.close();
+            return (l === null) ? null : ("" + l).trim();
+        } catch (e) {
+            logOnce("readLine:" + path, "readLine(" + path + ") err: " + e);
+            return null;
+        }
+    }
+
+    /** "a=1;b=2" -> {a:"1", b:"2"} */
+    function parseKv(line) {
+        var out = {};
+        line.split(";").forEach(function (part) {
+            var i = part.indexOf("=");
+            if (i > 0) out[part.substring(0, i).trim()] = part.substring(i + 1).trim();
+        });
+        return out;
+    }
+
+    function intOrNull(v) {
+        if (v === undefined || v === null || v === "" || v === "--") return null;
+        var n = parseInt(v, 10);
+        return isNaN(n) ? null : n;
+    }
+
+    /**
+     * Snapshot do ciclo, ou null quando o card não deve aparecer: arquivo ausente,
+     * linha ilegível ou `ts` vencido (serviço do outro app morto/parado — melhor
+     * sumir o card do que deixar um número velho na Home).
+     */
+    function readEvState() {
+        var line = readLine(EV_STATE);
+        if (line === null || line === "") return null;
+        var kv = parseKv(line);
+        var ts = intOrNull(kv.ts);
+        if (ts === null) return null;
+        var age = Math.floor(Date.now() / 1000) - ts;
+        // age negativo = relógio do sistema andou para trás no boot; não descarta.
+        if (age > EV_MAX_AGE) {
+            logOnce("evstale", "estado do ciclo vencido (" + age + "s) — card do ciclo oculto");
+            return null;
+        }
+        var phase = intOrNull(kv.phase);
+        return {
+            conn:  kv.conn === "1",
+            auto:  kv.auto === "1",
+            phase: (phase === 80 || phase === 20) ? phase : null,
+            soc:   intOrNull(kv.soc),
+            model: intOrNull(kv.model)
+        };
+    }
+
+    function evSig(e) {
+        if (e === null) return "none";
+        return [e.conn, e.auto, e.phase, e.soc, e.model].join("|");
     }
 
     // ── desenho ─────────────────────────────────────────────────────────────
@@ -290,6 +383,41 @@ Java.perform(function () {
         line(cv, x, cy + 9, x + 15, cy + 9, p);
     }
 
+    /** Raio: polígono fechado preenchido, no box r x r centrado em (cx,cy). */
+    function drawBolt(cv, cx, cy, r, color) {
+        // mesma silhueta do ícone do preview, em coordenadas 0..24 reescaladas
+        var pts = [[13,2],[4.5,13.5],[11,13.5],[10,22],[18.5,10.5],[12,10.5]];
+        var p   = PathCls.$new();
+        var k   = r / 24.0;
+        pts.forEach(function (pt, i) {
+            var x = cx + (pt[0] - 12) * k;
+            var y = cy + (pt[1] - 12) * k;
+            if (i === 0) p.moveTo(x, y); else p.lineTo(x, y);
+        });
+        p.close();
+        cv.drawPath.overload("android.graphics.Path", "android.graphics.Paint")
+            .call(cv, p, newPaint(color, false, 0));
+    }
+
+    /** Pilha com o nível preenchido (0..100), centrada em (cx,cy). */
+    function drawBattery(cv, cx, cy, r, pct, color) {
+        var w = r * 1.15, h = r * 0.80;
+        var l = cx - w / 2, t = cy - h / 2;
+        roundRect(cv, l + 1, t + 1, l + w * 0.82 - 1, t + h - 1, 5, newPaint(color, true, 2.2));
+        roundRect(cv, l + w * 0.86, cy - h * 0.16, l + w, cy + h * 0.16, 2,
+            newPaint(color, false, 0));
+        var inner = (w * 0.82 - 10) * Math.max(0, Math.min(100, pct)) / 100.0;
+        if (inner > 0)
+            roundRect(cv, l + 5, t + 5, l + 5 + inner, t + h - 5, 2.5, newPaint(color, false, 0));
+    }
+
+    /** Pausa: duas barras. Fase indefinida (ciclo desligado / sem conexão). */
+    function drawPause(cv, cx, cy, r, color) {
+        var p = newPaint(color, true, 2.4);
+        line(cv, cx - r * 0.22, cy - r * 0.42, cx - r * 0.22, cy + r * 0.42, p);
+        line(cv, cx + r * 0.22, cy - r * 0.42, cx + r * 0.22, cy + r * 0.42, p);
+    }
+
     /**
      * Pinta o card inteiro num Bitmap ARGB_8888 de 536x324.
      * Só é chamado quando o snapshot muda (ver tick) — redesenhar a 1,5s
@@ -362,6 +490,131 @@ Java.perform(function () {
         return bmp;
     }
 
+    /**
+     * Card do ciclo automático, 536x300, com a mesma moldura do card de clima.
+     * Só dados do ciclo — bateria é a variável que o algoritmo observa, não um
+     * medidor genérico; autonomia e odômetro ficam de fora de propósito.
+     *
+     * Layout (preview aprovado: haval-ev-manager/preview/auto-cycle-card-preview.html):
+     *   cabeçalho  baseline 52      "CICLO AUTO" + selo ATIVO/OFF/OFFLINE
+     *   tile       y 98, 88x88      raio na fase CARGA, pilha na USO, pausa parado
+     *   bateria    baseline 170     número grande + "%", rótulo BATERIA em 198
+     *   pastilha   y 100..134       CARGA (verde) / USO (âmbar), alinhada à direita
+     *   modo       baseline 166     "MODO HEV" / "MODO EV" — o power_model da fase
+     *   barra      y 232..246       nível + traço branco no gatilho da virada
+     *   escala     baseline 272     0 · meta e quanto falta · 100
+     */
+    function drawEvCard(e) {
+        var bmp = Bitmap.createBitmap.overload("int", "int", "android.graphics.Bitmap$Config")
+            .call(Bitmap, W, H, BmpConfig.ARGB_8888.value);
+        var cv = Canvas.$new.overload("android.graphics.Bitmap").call(Canvas, bmp);
+
+        roundRect(cv, 0.5, 0.5, W - 0.5, H - 0.5, 24, gradPaint(G_BG_COLORS, G_BG_STOPS, 0));
+        roundRect(cv, 0.5, 0.5, W - 0.5, H - 0.5, 24, gradPaint(G_EDGE_COLORS, G_EDGE_STOPS, 1));
+
+        // "vivo" = conectado E ciclo ligado: só aí a fase significa alguma coisa
+        var live    = e.conn && e.auto;
+        var phase   = live ? e.phase : null;            // 80 = CARGA, 20 = USO
+        var charge  = phase === 80;
+        var use     = phase === 20;
+        var hue     = charge ? C_ACCENT : use ? C_AMBER : C_FAINT;
+        var hueSoft = charge ? C_ACCENT_SOFT : use ? C_AMBER_SOFT : C_SURFACE2;
+        var hueEdge = charge ? C_ACCENT_EDGE : use ? C_AMBER_EDGE : C_BORDER;
+        var soc     = e.conn ? e.soc : null;
+
+        // ── cabeçalho ──
+        text(cv, "CICLO AUTO", PAD, 52, textPaint(C_DIM, 17, "sans-serif-medium", 0.18));
+
+        var badge  = !e.conn ? "OFFLINE" : e.auto ? "ATIVO" : "OFF";
+        var badgeP = textPaint(live ? C_ACCENT : C_FAINT, 16, "monospace", 0.06);
+        var badgeW = badgeP.measureText.overload("java.lang.String").call(badgeP, badge);
+        text(cv, badge, W - PAD - badgeW, 52, badgeP);
+        circle(cv, W - PAD - badgeW - 16, 46, 5, newPaint(live ? C_ACCENT : C_FAINT, false, 0));
+
+        // ── tile com o ícone da fase ──
+        var tileX = PAD, tileY = 98, tileS = 88;
+        var tcx = tileX + tileS / 2, tcy = tileY + tileS / 2;
+        roundRect(cv, tileX, tileY, tileX + tileS, tileY + tileS, 22, newPaint(hueSoft, false, 0));
+        roundRect(cv, tileX + 0.5, tileY + 0.5, tileX + tileS - 0.5, tileY + tileS - 0.5, 22,
+            newPaint(hueEdge, true, 1));
+        if (charge)      drawBolt(cv, tcx, tcy, 44, hue);
+        else if (use)    drawBattery(cv, tcx, tcy, 46, soc === null ? 0 : soc, hue);
+        else             drawPause(cv, tcx, tcy, 44, C_FAINT);
+
+        // ── bateria ──
+        var bx     = tileX + tileS + 24;
+        var socStr = (soc === null) ? "--" : ("" + soc);
+        var socP   = textPaint(soc === null ? C_FAINT : C_FG, 76, "sans-serif-medium", 0);
+        text(cv, socStr, bx, 170, socP);
+        if (soc !== null) {
+            var sw = socP.measureText.overload("java.lang.String").call(socP, socStr);
+            text(cv, "%", bx + sw + 6, 170, textPaint(C_MUTED, 34, "sans-serif", 0));
+        }
+        text(cv, "BATERIA", bx + 2, 198, textPaint(C_DIM, 15, "sans-serif-medium", 0.2));
+
+        // ── pastilha da fase + modo imposto, alinhadas à direita ──
+        var pillTxt = charge ? "CARGA" : use ? "USO" : "--";
+        var pillP   = textPaint(live ? hue : C_FAINT, 19, "monospace", 0.1);
+        var pillTW  = pillP.measureText.overload("java.lang.String").call(pillP, pillTxt);
+        var pillR   = W - PAD, pillL = pillR - pillTW - 32;
+        roundRect(cv, pillL, 100, pillR, 134, 14, newPaint(hueSoft, false, 0));
+        roundRect(cv, pillL + 0.5, 100.5, pillR - 0.5, 133.5, 14, newPaint(hueEdge, true, 1));
+        text(cv, pillTxt, pillL + 16, 124, pillP);
+
+        // power_model que a fase impõe: CARGA = HEV (motor recarrega), USO = EV.
+        // Com o ciclo ligado a fase manda; desligado, mostra o que o carro reporta.
+        var modeTxt = live ? (charge ? "HEV" : use ? "EV" : "--")
+                    : (e.model === 0 ? "HEV" : e.model === 1 ? "EV" : "--");
+        var modeP   = textPaint(live ? C_MUTED : C_FAINT, 17, "monospace", 0.06);
+        var modeW   = modeP.measureText.overload("java.lang.String").call(modeP, modeTxt);
+        var lblP    = textPaint(C_DIM, 13, "sans-serif-medium", 0.1);
+        var lblW    = lblP.measureText.overload("java.lang.String").call(lblP, "MODO");
+        text(cv, modeTxt, W - PAD - modeW, 166, modeP);
+        text(cv, "MODO", W - PAD - modeW - 8 - lblW, 166, lblP);
+
+        // ── barra: nível + traço no gatilho da próxima virada ──
+        var trL = PAD, trR = W - PAD, trT = 232, trB = 246;
+        roundRect(cv, trL, trT, trR, trB, 7, newPaint(C_SURFACE2, false, 0));
+        roundRect(cv, trL + 0.5, trT + 0.5, trR - 0.5, trB - 0.5, 7, newPaint(C_BORDER, true, 1));
+        if (soc !== null && soc > 0) {
+            var fw = (trR - trL) * Math.max(0, Math.min(100, soc)) / 100.0;
+            var fillC = !live ? C_MUTED : charge ? C_ACCENT : (soc <= 20 ? C_RED : C_AMBER);
+            // largura mínima de 14 = o raio do roundRect; abaixo disso ele some
+            roundRect(cv, trL, trT, trL + Math.max(14, fw), trB, 7, newPaint(fillC, false, 0));
+        }
+
+        // gatilho: na CARGA vira em >=75, no USO vira em <=20 (ver CLAUDE.md do ev-manager)
+        var gate = charge ? 75 : use ? 20 : null;
+        if (gate !== null) {
+            var gx = trL + (trR - trL) * gate / 100.0;
+            roundRect(cv, gx - 1.5, trT - 5, gx + 1.5, trB + 5, 2, newPaint(C_FG, false, 0));
+        }
+
+        // ── escala ──
+        var scaleP = textPaint(C_DIM, 13, "monospace", 0.06);
+        text(cv, "0", trL, 272, scaleP);
+        var hundredW = scaleP.measureText.overload("java.lang.String").call(scaleP, "100");
+        text(cv, "100", trR - hundredW, 272, scaleP);
+
+        var center;
+        if (!e.conn)            center = "SEM CONEXAO";
+        else if (!e.auto)       center = "CICLO DESLIGADO";
+        else if (gate === null) center = "AGUARDANDO SOC TARGET";
+        else if (soc === null)  center = "META " + phase + "% · aguardando bateria";
+        else {
+            var falta = charge ? Math.max(0, gate - soc) : Math.max(0, soc - gate);
+            center = (falta === 0)
+                ? "VIRANDO DE FASE…"
+                : "META " + phase + "% · vira em " + (charge ? ">=" : "<=") + gate
+                  + "% (faltam " + falta + ")";
+        }
+        var cenP = textPaint(C_MUTED, 13, "monospace", 0.06);
+        var cenW = cenP.measureText.overload("java.lang.String").call(cenP, center);
+        text(cv, center, (W - cenW) / 2, 272, cenP);
+
+        return bmp;
+    }
+
     // ── ids de recurso (§3: campo estático de R$id, com fallback do arsc) ────
     var RID = null;
     try {
@@ -395,22 +648,14 @@ Java.perform(function () {
     // ── estado desejado ─────────────────────────────────────────────────────
     var enabled  = false;
     var lastCtrl = null;        // marcador "ainda não li"
-    var lastSig  = null;        // snapshot já pintado
+    var lastSig  = null;        // snapshot do clima já pintado
+    var lastEvSig = null;       // snapshot do ciclo já pintado
     var origList  = null;       // CPs de fábrica, para restaurar no "off"
     var origRowTop = null;      // topMargin original da fileira, para restaurar no "off"
 
     function readCtrl() {
-        try {
-            var f = JFile.$new(CTRL);
-            if (!f.exists()) return false;
-            var br = BufReader.$new(FileReader.$new(f));
-            var l  = br.readLine();
-            br.close();
-            return ((l === null ? "" : ("" + l)).trim().toLowerCase() === "on");
-        } catch (e) {
-            log("readCtrl err: " + e);
-            return false;
-        }
+        var l = readLine(CTRL);
+        return (l !== null) && (l.toLowerCase() === "on");
     }
 
     // Integer[] no Frida é array JS de wrappers Integer (§7.2): montar via
@@ -499,25 +744,27 @@ Java.perform(function () {
     }
 
     // ── clique: reusa o dispatch por elevation do OEM (handoff §5.3) ─────────
-    function openOurApp() {
+    function openApp(pkg) {
         try {
             var ctx = Java.use("android.app.ActivityThread")
                 .currentApplication().getApplicationContext();
-            var i = ctx.getPackageManager().getLaunchIntentForPackage(OUR_PKG);
-            if (i === null) { log("app " + OUR_PKG + " não instalado"); return false; }
+            var i = ctx.getPackageManager().getLaunchIntentForPackage(pkg);
+            if (i === null) { log("app " + pkg + " não instalado"); return false; }
             i.addFlags(0x10000000);   // FLAG_ACTIVITY_NEW_TASK
             ctx.startActivity(i);
-            log("card clicado -> abrindo " + OUR_PKG);
+            log("card clicado -> abrindo " + pkg);
             return true;
         } catch (e) {
-            log("openOurApp err: " + e);
+            log("openApp(" + pkg + ") err: " + e);
             return false;
         }
     }
 
     try {
         Java.use(IMPL_CLS).skipApp4OnlineOs.implementation = function (cp) {
-            if (parseInt("" + cp, 10) === CP_CARD && openOurApp()) return;
+            var n = parseInt("" + cp, 10);
+            if (n === CP_CARD && openApp(OUR_PKG)) return;
+            if (n === CP_EV   && openApp(EV_PKG))  return;
             return this.skipApp4OnlineOs(cp);
         };
         log("hook OK skipApp4OnlineOs (clique do card)");
@@ -539,7 +786,7 @@ Java.perform(function () {
             this.loadOnlineMusicCard();
             if (!enabled) return;
             try {
-                paintCard(this, readState());
+                paintCards(this, readState(), readEvState());
             } catch (e) {
                 logOnce("onload:" + e, "paint no loadOnlineMusicCard err: " + e);
             }
@@ -555,46 +802,100 @@ Java.perform(function () {
      * pinta o bitmap. Roda SEMPRE na main thread. A view é achada por tag —
      * guardar o wrapper entre ticks derruba o processo (§7.4).
      */
-    function paintCard(act, s) {
+    function findByTag(boxRaw, tag) {
+        var boxV = Java.cast(boxRaw, ViewCls);
+        return boxV.findViewWithTag.overload("java.lang.Object").call(boxV, Str.$new(tag));
+    }
+
+    /**
+     * Cria o ImageView de um card e o pendura no container.
+     *
+     * `clearFirst` só no card de clima, que é o dono da fileira: ele limpa os
+     * ícones do OEM e define a ordem — clima primeiro, ciclo à direita com GAP de
+     * margem. Se a Activity for recriada, loadOnlineMusicCard refaz a fileira e os
+     * dois voltam na mesma ordem no tick seguinte.
+     */
+    function makeCard(act, boxRaw, tag, cp, clearFirst) {
+        var iv  = ImageView.$new.overload("android.content.Context").call(ImageView, act);
+        var ivV = Java.cast(iv, ViewCls);
+        ivV.setTag.overload("java.lang.Object").call(ivV, Str.$new(tag));
+        // elevation = CP virtual: é assim que o onClick do OEM identifica a view
+        ivV.setElevation(cp);
+        ivV.setOnClickListener(Java.cast(act, Java.use("android.view.View$OnClickListener")));
+
+        var lp = LLParams.$new.overload("int", "int").call(LLParams, W, H);
+        // leftMargin é declarado em MarginLayoutParams: via LLParams o wrapper do
+        // Frida pode não expor o campo herdado, por isso o cast explícito.
+        if (!clearFirst) Java.cast(lp, MarginLP).leftMargin.value = GAP;
+        ivV.setLayoutParams(Java.cast(lp, VGLayoutParams));
+
+        var box = Java.cast(boxRaw, ViewGroupCls);
+        if (clearFirst) box.removeAllViews();
+        box.addView.overload("android.view.View").call(box, ivV);
+        log("card " + tag + " criado no container");
+        return iv;
+    }
+
+    function removeByTag(boxRaw, tag) {
+        var found = findByTag(boxRaw, tag);
+        if (found === null) return false;
+        var box = Java.cast(boxRaw, ViewGroupCls);
+        box.removeView.overload("android.view.View").call(box, Java.cast(found, ViewCls));
+        return true;
+    }
+
+    /**
+     * Pinta o card de clima e, quando há estado fresco do haval-ev-manager, o card
+     * do ciclo automático ao lado. `e === null` tira o card do ciclo da fileira e
+     * deixa só o de clima.
+     */
+    function paintCards(act, s, e) {
         try {
             var boxRaw = viewOf(act, "online_music_container");
             if (boxRaw === null) { logOnce("nobox", "container não está inflado"); return; }
 
-            var tagStr = Str.$new(CARD_TAG);
-            var boxV   = Java.cast(boxRaw, ViewCls);
-            var found  = boxV.findViewWithTag.overload("java.lang.Object").call(boxV, tagStr);
-
+            // ── card de clima (dono da fileira) ──
+            var found = findByTag(boxRaw, CARD_TAG);
             var iv;
             if (found === null) {
-                iv = ImageView.$new.overload("android.content.Context").call(ImageView, act);
-                var ivV = Java.cast(iv, ViewCls);
-                ivV.setTag.overload("java.lang.Object").call(ivV, tagStr);
-                // elevation = CP virtual: é assim que o onClick do OEM identifica a view
-                ivV.setElevation(CP_CARD);
-                ivV.setOnClickListener(Java.cast(act, Java.use("android.view.View$OnClickListener")));
-                var lp = LLParams.$new.overload("int", "int").call(LLParams, W, H);
-                ivV.setLayoutParams(Java.cast(lp, VGLayoutParams));
-
-                var box = Java.cast(boxRaw, ViewGroupCls);
-                box.removeAllViews();
-                box.addView.overload("android.view.View").call(box, ivV);
-                log("card criado no container");
-                lastSig = null;                    // força a primeira pintura
+                iv = makeCard(act, boxRaw, CARD_TAG, CP_CARD, true);
+                lastSig   = null;      // força a primeira pintura
+                lastEvSig = null;      // o removeAllViews levou junto o card do ciclo
             } else {
                 iv = Java.cast(found, ImageView);
             }
-
             var sig = stateSig(s);
             if (sig !== lastSig) {
                 iv.setImageBitmap(drawCard(s));
                 lastSig = sig;
-                log("card pintado: " + sig);
+                log("card de clima pintado: " + sig);
+            }
+
+            // ── card do ciclo (dados do app vizinho) ──
+            var evFound = findByTag(boxRaw, EV_CARD_TAG);
+            if (e === null) {
+                if (removeByTag(boxRaw, EV_CARD_TAG)) log("card do ciclo removido (sem estado)");
+                lastEvSig = null;
+            } else {
+                var evIv;
+                if (evFound === null) {
+                    evIv = makeCard(act, boxRaw, EV_CARD_TAG, CP_EV, false);
+                    lastEvSig = null;
+                } else {
+                    evIv = Java.cast(evFound, ImageView);
+                }
+                var es = evSig(e);
+                if (es !== lastEvSig) {
+                    evIv.setImageBitmap(drawEvCard(e));
+                    lastEvSig = es;
+                    log("card do ciclo pintado: " + es);
+                }
             }
 
             setTitleVisible(act, false);
             setRowTop(act, ROW_TOP);
-        } catch (e) {
-            logOnce("paint:" + e, "paintCard err: " + e + (e.stack ? " | " + e.stack : ""));
+        } catch (err) {
+            logOnce("paint:" + err, "paintCards err: " + err + (err.stack ? " | " + err.stack : ""));
         }
     }
 
@@ -644,15 +945,10 @@ Java.perform(function () {
         try {
             var boxRaw = viewOf(act, "online_music_container");
             if (boxRaw !== null) {
-                var boxV  = Java.cast(boxRaw, ViewCls);
-                var found = boxV.findViewWithTag.overload("java.lang.Object")
-                    .call(boxV, Str.$new(CARD_TAG));
-                if (found !== null) {
-                    Java.cast(boxRaw, ViewGroupCls)
-                        .removeView.overload("android.view.View")
-                        .call(Java.cast(boxRaw, ViewGroupCls), Java.cast(found, ViewCls));
-                }
+                removeByTag(boxRaw, CARD_TAG);
+                removeByTag(boxRaw, EV_CARD_TAG);
             }
+            lastEvSig = null;
             if (origRowTop !== null) setRowTop(act, origRowTop);
             setTitleVisible(act, true);
             act.loadOnlineMusicCard();       // redesenha os ícones de fábrica
@@ -688,18 +984,22 @@ Java.perform(function () {
             var want = readCtrl();
             var changed = (want !== lastCtrl);
             if (changed) {
-                lastCtrl = want;
-                enabled  = want;
-                lastSig  = null;
+                lastCtrl  = want;
+                enabled   = want;
+                lastSig   = null;
+                lastEvSig = null;
                 log("card na home = " + (want ? "ON" : "OFF"));
                 applyToInstances();
             }
             if (enabled) {
+                // Os dois snapshots saem daqui (thread do tick) e não da main:
+                // readEvState faz I/O de arquivo, que não deve ir no frame.
                 var s = readState();
+                var e = readEvState();
                 withActivity(function (act) {
                     // loadOnlineMusicCard roda no onCreate e faz removeAllViews:
-                    // se a Activity foi recriada, paintCard recria o card sozinho.
-                    paintCard(act, s);
+                    // se a Activity foi recriada, paintCards recria os cards sozinho.
+                    paintCards(act, s, e);
                 });
             } else if (changed) {
                 withActivity(restore);
@@ -722,8 +1022,17 @@ Java.perform(function () {
          ["stateSig",   function () { return stateSig(readState()).length > 0; }],
          ["drawCard",   function () { return drawCard(readState()) !== null; }],
          ["readCtrl",   function () { return typeof readCtrl() === "boolean"; }],
+         ["parseKv",    function () { return parseKv("a=1;b=--").a === "1"; }],
+         ["intOrNull",  function () { return intOrNull("--") === null && intOrNull("20") === 20; }],
+         ["readEvState",function () { var e = readEvState(); return e === null || e.conn !== undefined; }],
+         ["evSig",      function () { return evSig(null) === "none"; }],
+         // desenha com um estado sintético: sem o ev-manager de pé readEvState é null
+         ["drawEvCard", function () {
+             return drawEvCard({conn:true, auto:true, phase:80, soc:62, model:0}) !== null; }],
          // teto rígido: 430 (topo do título "Mídia local") - ROW_TOP
-         ["altura",     function () { return ROW_TOP + H <= 430; }]
+         ["altura",     function () { return ROW_TOP + H <= 430; }],
+         // a fileira tem 1158 nesta config: os dois cards + o GAP precisam caber
+         ["largura",    function () { return W * 2 + GAP <= 1158; }]
         ].forEach(function (par) {
             try {
                 if (par[1]() !== true) falhas.push(par[0] + " (resultado inesperado)");
@@ -735,5 +1044,5 @@ Java.perform(function () {
         else log("autoteste dos helpers FALHOU -> " + falhas.join(" | "));
     })();
 
-    log("card de clima na home ativo (alvo com.beantechs.mediacenter)");
+    log("cards de clima + ciclo na home ativos (alvo com.beantechs.mediacenter)");
 });

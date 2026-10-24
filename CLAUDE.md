@@ -58,3 +58,30 @@ do GitHub:
 - Área de trabalho real do app: **1792 × 660 dp** (descontando a status bar de ~60dp no topo).
 - A tela é muito mais larga que alta (2.49:1) — prefira layouts horizontais, evite `Column` longas que precisam de scroll.
 - `fillMaxSize()` ocupa os 1792 × 660 dp úteis.
+
+## Cards na Home da MediaCenter (agente único)
+
+O script `app/src/main/res/raw/com_beantechs_mediacenter_card.js` é o **único** agente
+Frida no processo `com.beantechs.mediacenter`, e desenha **dois** cards na fileira de
+mídia online (1158px): clima (CP virtual 590) e ciclo automático do haval-ev-manager
+(CP 591), 536×300 cada, com 24px entre eles.
+
+> O haval-ev-manager já teve agente próprio (v1.7.0 dele) e os dois juntos derrubaram
+> o ART: SIGSEGV em `MterpInvokeVirtual`, mesmos `ArtMethod` hookados dos dois lados e
+> dois watchdogs com `pkill` + reinjetar a cada 10s. **Um agente só, aqui.**
+
+### Dados do card do ciclo
+
+Vêm de `/data/local/tmp/haval_ev_home_card`, escrito pelo haval-ev-manager — o script
+não fala com o veículo para isso (a fase do ciclo só existe nas prefs do outro app):
+
+```
+conn=1;auto=1;phase=80;soc=62;model=0;ts=1761300000
+```
+
+`phase` 80 = CARGA (verde, modo HEV), 20 = USO (âmbar, modo EV). O traço branco na
+barra é o gatilho da virada: ≥75% na CARGA, ≤20% no USO.
+
+Arquivo ausente, linha ilegível ou `ts` com mais de `EV_MAX_AGE` (90s) → o card do
+ciclo sai da fileira e fica só o de clima. Mudar o formato exige mudar junto o
+`HomeCardState.java` do haval-ev-manager.
