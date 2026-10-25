@@ -680,8 +680,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 return;
             }
             float insideTemp = Float.parseFloat(insideTempStr);
-            if (insideTemp == 87f) {
-                // Sensor offline — car is off, ignore reading
+            if (insideTemp >= 87f) {
+                // Sensor offline — car is off, ignore reading. Na partida o carro manda
+                // 87.5 (byte 0xFF: 255 * 0.5 - 40) antes da primeira leitura real.
                 insideTempWasOffline = true;
                 pushState(true, null);
                 return;
