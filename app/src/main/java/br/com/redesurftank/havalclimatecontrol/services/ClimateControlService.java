@@ -1310,18 +1310,22 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         climateStripBootstrapped = true;
 
         ClimateStateHolder.INSTANCE.setOnClimateStripToggle(enabled ->
-                backgroundHandler.post(() -> applyClimateStrip(enabled)));
+                backgroundHandler.post(() -> applyClimateStrip(enabled, true)));
 
         OverscanUtils.clearIfOurs("faixa nao reserva mais o rodape");
 
         boolean wanted = App.getDeviceProtectedContext()
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getBoolean(KEY_CLIMATE_STRIP, false);
-        if (wanted) applyClimateStrip(true);
+        // No start a faixa entra escondida: so a alca fica armada, esperando o gesto.
+        if (wanted) applyClimateStrip(true, false);
     }
 
-    /** (Des)ativa a faixa. Roda no backgroundHandler; a janela vai para a main. */
-    private void applyClimateStrip(boolean enabled) {
+    /**
+     * (Des)ativa a faixa. Roda no backgroundHandler; a janela vai para a main.
+     * {@code revealNow}: mostra a faixa uma vez ao ligar, como confirmacao do toggle.
+     */
+    private void applyClimateStrip(boolean enabled, boolean revealNow) {
         if (enabled) {
             // A central nao tem tela de "sobrepor a outros apps"; o appop pelo shell do
             // Shizuku e o que o Settings faria. Idempotente.
@@ -1333,7 +1337,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             mainHandler.post(() -> {
                 if (!isServiceRunning) return;
                 if (climateStrip == null) climateStrip = new ClimateStripOverlay(this);
-                climateStrip.install();
+                climateStrip.install(revealNow);
             });
         } else {
             mainHandler.post(() -> {

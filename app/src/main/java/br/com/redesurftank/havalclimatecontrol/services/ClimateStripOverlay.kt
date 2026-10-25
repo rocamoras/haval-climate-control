@@ -124,8 +124,12 @@ class ClimateStripOverlay(private val context: Context) {
 
     val isInstalled: Boolean get() = bar != null
 
-    /** Liga o recurso: adiciona a alça e a faixa, e mostra a faixa uma vez como confirmação. */
-    fun install() {
+    /**
+     * Liga o recurso: adiciona a alça e a faixa. `revealNow` mostra a faixa uma vez como
+     * confirmação — só quando o usuário acabou de ligar a opção; no start do serviço ela
+     * entra escondida, esperando o gesto na alça.
+     */
+    fun install(revealNow: Boolean) {
         if (bar != null) return
 
         val e = View(context).apply { setOnTouchListener(EdgeSwipe()) }
@@ -170,7 +174,7 @@ class ClimateStripOverlay(private val context: Context) {
         PersistentLog.w(TAG, "faixa instalada")
         handler.postDelayed({ pinToBottom(e, eLp, "alca", 1) }, PIN_DELAY_MS)
         handler.postDelayed({ pinToBottom(b, bLp, "faixa", 1) }, PIN_DELAY_MS)
-        reveal()
+        if (revealNow) reveal()
     }
 
     /** Desliga o recurso: remove as duas janelas. */

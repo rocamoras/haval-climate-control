@@ -223,8 +223,25 @@ Java.perform(function () {
 
     // ── estado do ciclo automático (vem do haval-ev-manager) ────────────────
 
-    /** Lê a primeira linha de um arquivo de texto, ou null. */
+    /**
+     * Lê a primeira linha de um arquivo de texto, ou null.
+     *
+     * Pelo File nativo do Frida (16.2+), sem objetos Java: o tick roda na thread
+     * do agente, e cada File/FileReader/BufferedReader dali era lixo de heap a mais
+     * para o GC varrer junto com os handles dessa thread (ver withActivity).
+     */
     function readLine(path) {
+        if (typeof File !== "undefined" && typeof File.readAllText === "function") {
+            try {
+                var txt = File.readAllText(path);
+                var nl = txt.indexOf("\n");
+                return (nl < 0 ? txt : txt.substring(0, nl)).trim();
+            } catch (e) {
+                // arquivo ausente é normal (ev-manager não instalado, card desligado)
+                logOnce("readLine:" + path, "readLine(" + path + ") sem leitura: " + e);
+                return null;
+            }
+        }
         try {
             var f = JFile.$new(path);
             if (!f.exists()) return null;
@@ -652,6 +669,8 @@ Java.perform(function () {
     var lastEvSig = null;       // snapshot do ciclo já pintado
     var origList  = null;       // CPs de fábrica, para restaurar no "off"
     var origRowTop = null;      // topMargin original da fileira, para restaurar no "off"
+    var actRef     = null;      // MediaCenterActivity viva, referência GLOBAL (ver withActivity)
+    var choseAt    = 0;         // último Java.choose da Activity (0 = nunca)
 
     function readCtrl() {
         var l = readLine(CTRL);
@@ -778,12 +797,16 @@ Java.perform(function () {
      * card entra no mesmo frame -- sem a janela de ate 1,5s em que o container
      * ficava vazio (ou com os icones do OEM) esperando o proximo tick.
      *
-     * `this` de hook e referencia JNI LOCAL (handoff 7.4): usar no mesmo tick e
-     * correto, guardar entre ticks aborta o processo. Aqui nao guardamos nada.
+     * `this` de hook e referencia JNI LOCAL (handoff 7.4): guardar o wrapper cru
+     * entre ticks aborta o processo. Por isso o que fica guardado e o Java.retain
+     * dele (referencia GLOBAL) -- e esse e o caminho normal pelo qual o tick acha a
+     * Activity, ja que todo onCreate passa por aqui.
      */
+    var loadHookOk = false;
     try {
         Java.use(ACT).loadOnlineMusicCard.implementation = function () {
             this.loadOnlineMusicCard();
+            actRef = Java.retain(this);
             if (!enabled) return;
             try {
                 paintCards(this, readState(), readEvState());
@@ -791,6 +814,7 @@ Java.perform(function () {
                 logOnce("onload:" + e, "paint no loadOnlineMusicCard err: " + e);
             }
         };
+        loadHookOk = true;
         log("hook OK loadOnlineMusicCard (card no mesmo frame do onCreate)");
     } catch (e) {
         log("hook FALHOU loadOnlineMusicCard: " + e);
@@ -958,21 +982,60 @@ Java.perform(function () {
         }
     }
 
-    /** Acha a Activity viva e roda `fn` na main thread. Sem cache entre ticks (§7.4). */
-    function withActivity(fn) {
-        var act = null;
+    /**
+     * Procura no heap uma MediaCenterActivity ainda não destruída. Instância de
+     * Java.choose já é referência GLOBAL — pode ficar guardada entre ticks (o agente
+     * do SystemUI guarda as views dele assim desde sempre).
+     */
+    function chooseActivity() {
         try {
             Java.choose(ACT, {
-                onMatch: function (inst) { act = inst; return "stop"; },
+                onMatch: function (inst) {
+                    // isDestroyed só lê um campo: seguro fora da main thread
+                    if (Java.cast(inst, ActivityCls).isDestroyed()) return;
+                    actRef = inst;
+                    return "stop";
+                },
                 onComplete: function () {}
             });
         } catch (e) {
             logOnce("choose:" + e, "choose err: " + e);
-            return;
         }
+    }
+
+    /**
+     * Roda `fn` na main thread com a Activity viva.
+     *
+     * A Activity vem do hook de loadOnlineMusicCard (todo onCreate) e fica guardada
+     * em `actRef`. Até a 1.30.0 isto fazia um Java.choose a CADA tick (40 varreduras
+     * do heap por minuto, na thread do agente), e a MediaCenter abortava no GC:
+     * "GC tried to mark invalid reference" em HandleScopeVisitRoots da thread do
+     * Frida — 3 vezes em 2026-10-24, a primeira 3,5 min depois da injeção. O agente
+     * do SystemUI, que faz choose uma vez só, nunca caiu assim. Agora o choose só
+     * cobre a Activity que já existia antes da injeção (uma vez) — ou, se o hook
+     * não pegou, é o único caminho, mas espaçado.
+     */
+    var CHOOSE_RETRY_MS = 30000;
+    function withActivity(fn) {
+        if (actRef === null) {
+            var now = Date.now();
+            if (choseAt === 0 || (!loadHookOk && now - choseAt >= CHOOSE_RETRY_MS)) {
+                choseAt = now;
+                chooseActivity();
+            }
+        }
+        var act = actRef;
         if (act === null) return;            // tela fechada: vale no próximo onCreate
         Java.scheduleOnMainThread(function () {
-            try { fn(act); }
+            try {
+                if (Java.cast(act, ActivityCls).isDestroyed()) {
+                    // a próxima chega pelo hook de loadOnlineMusicCard no onCreate dela
+                    if (actRef === act) actRef = null;
+                    log("activity destruída — aguardando o próximo onCreate");
+                    return;
+                }
+                fn(act);
+            }
             catch (e) { logOnce("main:" + e, "main thread err (activity morta?): " + e); }
         });
     }
