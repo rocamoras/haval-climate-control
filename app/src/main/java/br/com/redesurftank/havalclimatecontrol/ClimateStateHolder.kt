@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import br.com.redesurftank.havalclimatecontrol.utils.DebloatUtils
 import br.com.redesurftank.havalclimatecontrol.utils.PersistentLog
 
 object ClimateStateHolder {
@@ -132,6 +133,13 @@ object ClimateStateHolder {
     /** Faixa de clima fixa (overlay + overscan). A pref fica em climate_control_prefs,
      *  device-protected, porque é ela que decide a limpeza do overscan no boot travado. */
     @Volatile var onClimateStripToggle: ToggleCallback? = null
+
+    /** Opções de performance (desativar apps do OEM). A pref já foi gravada pela UI; o
+     *  serviço só aplica. */
+    fun interface DebloatCallback {
+        fun onToggle(target: DebloatUtils.Target)
+    }
+    @Volatile var onDebloatToggle: DebloatCallback? = null
 
     /**
      * Avisa o serviço quando a nossa Activity entra e sai de foco.

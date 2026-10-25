@@ -43,6 +43,7 @@ import br.com.redesurftank.havalclimatecontrol.App;
 import br.com.redesurftank.havalclimatecontrol.CarProps;
 import br.com.redesurftank.havalclimatecontrol.ClimateStateHolder;
 import br.com.redesurftank.havalclimatecontrol.broadcastReceivers.RestartReceiver;
+import br.com.redesurftank.havalclimatecontrol.utils.DebloatUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.IPTablesUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.OverscanUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.PersistentLog;
@@ -117,7 +118,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final long   MIN_MEDIACENTER_INJECT_AGE_MS = 0;
 
     private static final String HVAC_PACKAGE_NAME    = "com.beantechs.hvac";
-    private static final String WEATHER_PACKAGE_NAME = "com.beantechs.weatherservice";
     // UM watchdog cobre os dois alvos Frida, e cada tick e UM shell (FridaUtils.probe).
     // Antes eram dois watchdogs de 10s com 2 shells cada = 24 newProcess por minuto,
     // para sempre. Cada newProcess deixa um RemoteProcessHolder no shizuku_server ate o
@@ -255,6 +255,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // Faixa de clima fixa — overlay criado e removido so na main thread.
     private ClimateStripOverlay climateStrip;
     private volatile boolean climateStripBootstrapped = false;
+    private volatile boolean debloatBootstrapped = false;
 
     // Watchdog unico dos dois alvos Frida, com intervalo adaptativo.
     private final Runnable injectionWatchdogRunnable = this::injectionWatchdogTick;
@@ -514,6 +515,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         backgroundHandler.post(this::bootstrapSystemUi);
         // Mesma logica: a faixa (ou a limpeza do overscan que sobrou) so depende do Shizuku.
         backgroundHandler.post(this::bootstrapClimateStrip);
+        // Opcoes de performance. Depois do SystemUI na fila: precisa do realTempEnabled.
+        backgroundHandler.post(this::bootstrapDebloat);
 
         try {
             IPTablesUtils.unlockInputOutputAll();
@@ -621,11 +624,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             new String[]{"pm", "enable", HVAC_PACKAGE_NAME});
                 }
             });
-
-            // O servico de previsao do tempo do OEM nao e usado para nada alem de alimentar
-            // a temperatura da barra (que a injecao no SystemUI substitui pelo sensor real).
-            // Fica SEMPRE desativado, com ou sem a temperatura real ligada.
-            backgroundHandler.post(this::disableWeatherService);
 
             // Modo turbo: mesma razao — a avaliacao roda com a tela fechada, entao o
             // espelho tem que vir da pref, nao do default do ClimateStateHolder.
@@ -1188,13 +1186,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // Temperatura Externa Real (UI) — injeção Frida no SystemUI
     // ─────────────────────────────────────────────────────────────
 
-    /** Desativa o serviço nativo de previsão do tempo da central. Nunca é reativado.
-     *  Roda no backgroundHandler. */
-    private void disableWeatherService() {
-        ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "disable-user", "--user", "0", WEATHER_PACKAGE_NAME});
-        ShizukuUtils.runCommandAndGetOutput(new String[]{"am", "force-stop", WEATHER_PACKAGE_NAME});
-    }
-
     /**
      * Registra o callback da temperatura real, le a pref e injeta no SystemUI. Uma vez por
      * instancia, no backgroundHandler, assim que o Shizuku esta utilizavel.
@@ -1247,6 +1238,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
      *  Roda no backgroundHandler. */
     private void applyRealOutsideTemp(boolean enabled) {
         realTempEnabled = enabled;
+        // A previsao do OEM escreve na mesma TextView da barra: com a temp real ligada ela
+        // sai do ar, e ao desligar volta ao que o toggle de performance dela disser.
+        DebloatUtils.reconcile(DebloatUtils.Target.WEATHER, enabled, false);
         if (!systemUiWanted) {
             Log.w(TAG, "[realtemp] Frida ausente neste APK — nada a fazer");
             return;
@@ -1292,6 +1286,21 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             ClimateStateHolder.INSTANCE.setHomeCardEnabled(true);
             applyHomeCard(true);
         }
+    }
+
+    // ─────────────────────────────
+    // Opcoes de performance — desativar apps do OEM
+    // ─────────────────────────────
+
+    /** Registra o callback da UI e aplica as prefs. Uma vez por instancia, no backgroundHandler. */
+    private void bootstrapDebloat() {
+        if (debloatBootstrapped) return;
+        debloatBootstrapped = true;
+
+        ClimateStateHolder.INSTANCE.setOnDebloatToggle(target ->
+                backgroundHandler.post(() -> DebloatUtils.reconcile(target,
+                        target == DebloatUtils.Target.WEATHER && realTempEnabled, true)));
+        DebloatUtils.reconcileAll(realTempEnabled);
     }
 
     // ─────────────────────────────
@@ -1647,6 +1656,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         backgroundHandler.removeCallbacks(injectionWatchdogRunnable);
         ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(null);
         ClimateStateHolder.INSTANCE.setOnClimateStripToggle(null);
+        ClimateStateHolder.INSTANCE.setOnDebloatToggle(null);
         // As janelas nao podem sobreviver a instancia: a nova, depois de um restart(), instala
         // as suas — e as velhas ficariam orfas, pegando toque na borda de baixo.
         if (climateStrip != null) climateStrip.uninstall();

@@ -47,6 +47,7 @@ import br.com.redesurftank.havalclimatecontrol.ui.OemSectionTitle
 import br.com.redesurftank.havalclimatecontrol.ui.OemSeg
 import br.com.redesurftank.havalclimatecontrol.ui.theme.HavalClimateControlTheme
 import br.com.redesurftank.havalclimatecontrol.services.ClimateControlService
+import br.com.redesurftank.havalclimatecontrol.utils.DebloatUtils
 import br.com.redesurftank.havalclimatecontrol.utils.FridaUtils
 import br.com.redesurftank.havalclimatecontrol.utils.LogUploader
 import br.com.redesurftank.havalclimatecontrol.utils.SystemPropsUtils
@@ -472,6 +473,12 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     var climateStripEnabled by remember {
         mutableStateOf(servicePrefs.getBoolean(KEY_CLIMATE_STRIP, false))
     }
+    // Opções de performance: a pref mora no DebloatUtils (mesmo store device-protected).
+    val debloatState = remember {
+        mutableStateMapOf<DebloatUtils.Target, Boolean>().apply {
+            DebloatUtils.Target.values().forEach { put(it, DebloatUtils.isWanted(it)) }
+        }
+    }
     var shizukuUp       by remember { mutableStateOf(SystemPropsUtils.isShizukuReady()) }
     var showShizukuHelp by remember { mutableStateOf(false) }
     // Acima de 10999 o firewall por uid do Android barra a conexao no telnet:23, que e
@@ -518,6 +525,25 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 state.sendCommand(propKey, i.toString())
             }
         }
+    }
+
+    /** Linha de uma opção de performance: Lig. = pacote do OEM desativado. */
+    @Composable
+    fun DebloatRow(target: DebloatUtils.Target, label: String, description: String) {
+        OemRow(label) {
+            OemSeg(listOf("Desl.", "Lig."), if (debloatState[target] == true) 1 else 0, 400.dp) { i ->
+                val wanted = i == 1
+                debloatState[target] = wanted
+                // Grava antes do callback: o serviço aplica lendo a pref.
+                DebloatUtils.setWanted(target, wanted)
+                state.onDebloatToggle?.onToggle(target)
+            }
+        }
+        Text(
+            description,
+            fontSize = 18.sp, color = OemInk3,
+            modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
+        )
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -695,6 +721,35 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 }
             }
 
+            // ── performance ───────────────────────────────────────────────────
+            OemSectionTitle("Performance")
+
+            DebloatRow(
+                DebloatUtils.Target.NAVIGATION, "Desativar navegador\nGPS nativo (Neusoft)",
+                "Desativa o app de navegação nativo (com.neusoft.na.navigation), que fica rodando " +
+                    "e consome RAM/CPU da central. Não afeta Android Auto, CarPlay nem Waze.",
+            )
+            DebloatRow(
+                DebloatUtils.Target.VOICE, "Desativar assistente\nde voz nativo (iFlyTek)",
+                "Desativa o assistente de voz nativo (com.iflytek.cutefly.speechclient.hmi + " +
+                    "com.beantechs.voiceclient). Você perde o comando de voz do OEM (\"Olá Haval\").",
+            )
+            DebloatRow(
+                DebloatUtils.Target.WEATHER, "Desativar previsão\ndo tempo (OEM)",
+                "Desativa o serviço de previsão do tempo (com.beantechs.weatherservice), que só " +
+                    "alimenta a temperatura da barra. Com a temperatura externa real ligada ele " +
+                    "fica desativado de qualquer jeito.",
+            )
+            DebloatRow(
+                DebloatUtils.Target.DATATRACK, "Bloquear telemetria\n(DataTrack → nuvem)",
+                "Congela o serviço do OEM que manda telemetria para a nuvem " +
+                    "(com.beantechs.datatrackservice). Não mexe no comando remoto.",
+            )
+            OemNote(
+                "Reversível: ao desligar, o app reativa o pacote. Vale também no boot. " +
+                    "Precisa do Shizuku ativo para aplicar."
+            )
+
             OemRow("Diagnóstico") {
                 OemButton(if (isUploading) "Enviando…" else "Enviar log", enabled = !isUploading) {
                     uploadLog()
@@ -751,7 +806,7 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
         AlertDialog(
             onDismissRequest  = { showHelp = false },
             title             = { Text("Temperatura Externa Real (UI)") },
-            text              = { Text("Ativando essa opção será mostrada na barra a temperatura externa real, lida do sensor do carro. O serviço nativo de previsão do tempo da central fica sempre desabilitado; com a opção desligada, a barra mostra \"--\".") },
+            text              = { Text("Ativando essa opção será mostrada na barra a temperatura externa real, lida do sensor do carro. Enquanto ela estiver ligada, o serviço nativo de previsão do tempo fica desativado (ele escreve no mesmo lugar da barra). Desligada, a barra volta a mostrar a previsão — ou \"--\", se a previsão estiver desativada em Performance.") },
             confirmButton     = { TextButton(onClick = { showHelp = false }) { Text("OK") } },
             containerColor    = Color(0xFF1E1E1E),
             titleContentColor = HmiFg,
