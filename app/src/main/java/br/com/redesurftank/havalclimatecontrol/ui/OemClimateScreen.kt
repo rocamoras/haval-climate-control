@@ -74,15 +74,9 @@ private val WIND_BY_BIT = listOf(
     4 to R.drawable.hvac_wind_win,
 )
 
-/**
- * Recirculação × ar externo (car.hvac.cycle_mode).
- *
- * NÃO é 0/1: o MainViewModel.exchangeClick do OEM compara com 1 e alterna entre 2 e 0,
- * ou seja, o eixo trabalha com 1 e 2. Confirmado até aí; qual dos dois é recirculação
- * ainda depende de teste no carro.
- */
-private const val CYCLE_RECIRC = "1"
-private const val CYCLE_FRESH  = "2"
+/** Recirculação × ar externo (car.hvac.cycle_mode) — valores em [CarProps]. */
+private const val CYCLE_RECIRC = CarProps.CYCLE_RECIRC
+private const val CYCLE_FRESH  = CarProps.CYCLE_FRESH
 
 // ─────────────────────────────────────────────────────────────
 // PM2.5 — cortes do com.beantechs.hvac, leitura nossa

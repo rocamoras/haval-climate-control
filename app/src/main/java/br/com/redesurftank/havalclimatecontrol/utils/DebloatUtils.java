@@ -38,15 +38,28 @@ public final class DebloatUtils {
         // A previsão só alimenta a temperatura da barra; versões anteriores a deixavam sempre
         // desativada, e o seed pelo estado real mantém isso para quem atualiza.
         WEATHER("debloat_native_weather", "com.beantechs.weatherservice"),
-        DATATRACK("debloat_datatrack", "com.beantechs.datatrackservice");
+        DATATRACK("debloat_datatrack", "com.beantechs.datatrackservice"),
+        // Tela de clima do OEM. É só interface: o HVACService dele apenas segura a conexão
+        // com o intelligentvehiclecontrol para a Activity, e toda escrita no carro parte de
+        // clique. Não semeia pelo estado real: o próprio ClimateControlService desativa
+        // esse pacote por sessão (tela do app na frente), e um boot nesse meio-tempo faria
+        // o toggle nascer ligado sem ninguém ter pedido.
+        HVAC(false, "debloat_oem_hvac", "com.beantechs.hvac");
 
         final String   key;
         /** O primeiro é o representante: é por ele que a verificação decide. */
         final String[] packages;
+        /** Pref ausente nasce do estado real do pacote (desativado por fora → ligado). */
+        final boolean  seedFromState;
 
         Target(String key, String... packages) {
-            this.key      = key;
-            this.packages = packages;
+            this(true, key, packages);
+        }
+
+        Target(boolean seedFromState, String key, String... packages) {
+            this.key           = key;
+            this.packages      = packages;
+            this.seedFromState = seedFromState;
         }
     }
 
@@ -59,6 +72,14 @@ public final class DebloatUtils {
     /** O usuário quer o pacote desativado. Ausente = ainda não semeado (vira false na UI). */
     public static boolean isWanted(Target t) {
         return prefs().getBoolean(t.key, false);
+    }
+
+    /** Mesma leitura, por um contexto qualquer — para o HvacGuardProvider, que pode
+     *  responder antes do Application.onCreate. */
+    public static boolean isWanted(Context ctx, Target t) {
+        return ctx.createDeviceProtectedStorageContext()
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(t.key, false);
     }
 
     /** commit, não apply: a central costuma ser desligada logo depois de mexer na tela. */
@@ -80,7 +101,7 @@ public final class DebloatUtils {
         SharedPreferences p = prefs();
         for (Target t : Target.values()) {
             if (!p.contains(t.key)) {
-                boolean disabledNow = !enabled.contains(t.packages[0]);
+                boolean disabledNow = t.seedFromState && !enabled.contains(t.packages[0]);
                 p.edit().putBoolean(t.key, disabledNow).commit();
                 PersistentLog.w(TAG, t.name() + ": pref semeada pelo estado real = " + disabledNow);
             }

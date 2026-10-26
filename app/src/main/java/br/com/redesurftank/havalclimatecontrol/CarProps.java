@@ -49,6 +49,13 @@ public final class CarProps {
     public static final String BLOWER_MODE     = "car.hvac.blower_mode";
     /** Recirculação × ar externo (o botão "troca de ar" do OEM é o mesmo eixo). */
     public static final String CYCLE_MODE      = "car.hvac.cycle_mode";
+    /**
+     * Valores de {@link #CYCLE_MODE}. NÃO é 0/1: o MainViewModel.exchangeClick do OEM
+     * compara com 1 e alterna entre 2 e 0, ou seja, o eixo trabalha com 1 e 2.
+     * Confirmado até aí; qual dos dois é recirculação ainda depende de teste no carro.
+     */
+    public static final String CYCLE_RECIRC    = "1";
+    public static final String CYCLE_FRESH     = "2";
     public static final String FRONT_DEFROST   = "car.hvac.front_defrost_enable";
     public static final String REAR_DEFROST    = "car.hvac.rear_defrost_enable";
 

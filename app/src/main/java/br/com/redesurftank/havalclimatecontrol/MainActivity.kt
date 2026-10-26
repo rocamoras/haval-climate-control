@@ -745,6 +745,13 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 "Congela o serviço do OEM que manda telemetria para a nuvem " +
                     "(com.beantechs.datatrackservice). Não mexe no comando remoto.",
             )
+            DebloatRow(
+                DebloatUtils.Target.HVAC, "Desativar tela de\nclima do OEM",
+                "Desativa o app de clima do OEM (com.beantechs.hvac), que fica rodando em " +
+                    "segundo plano. O ar-condicionado funciona igual — ele é só a tela. Com a " +
+                    "faixa de clima ligada, o botão de A/C da barra lateral e os botões físicos " +
+                    "abrem a faixa no lugar dele. O atalho de clima da Home para de abrir.",
+            )
             OemNote(
                 "Reversível: ao desligar, o app reativa o pacote. Vale também no boot. " +
                     "Precisa do Shizuku ativo para aplicar."

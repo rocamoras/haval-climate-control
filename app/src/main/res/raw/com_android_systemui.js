@@ -17,6 +17,9 @@
  *    automatica recente). Qualquer falha na consulta deixa o popup do OEM passar.
  *    A linha "GUARDA HVAC ARMADA" no log e o que o servico le (FridaUtils.probe) para
  *    parar de usar o `pm disable` — o texto tem de casar com GUARD_ARMED_MARK.
+ *    Com o app de clima do OEM desativado (opcoes de performance), o mesmo provider
+ *    tambem abre a faixa do app no lugar dele: no popup que nao veio de nos e no botao
+ *    de A/C da barra lateral (AppUtils.Companion.startHVACApp, metodo "open").
  *
  * 2) TEMPERATURA EXTERNA REAL — ligada por /data/local/tmp/haval_real_temp ("on"/"off").
  *    Engenharia reversa (SystemUI decompilado):
@@ -44,13 +47,18 @@ Java.perform(function () {
     var PANEL_KEY = "car.hvac.panel_display_notify";
     var GUARD_URI = "content://br.com.redesurftank.havalclimatecontrol.hvacguard";
 
+    /** Chama o provider do app; null se ele nao respondeu (app fora, provider ausente). */
+    function guardCall(method) {
+        var Uri = Java.use("android.net.Uri");
+        var ctx = Java.use("android.app.ActivityThread").currentApplication();
+        var cr  = ctx.getContentResolver();
+        return cr.call.overload("android.net.Uri", "java.lang.String", "java.lang.String", "android.os.Bundle")
+            .call(cr, Uri.parse(GUARD_URI), method, null, null);
+    }
+
     function suppressReason() {
         try {
-            var Uri = Java.use("android.net.Uri");
-            var ctx = Java.use("android.app.ActivityThread").currentApplication();
-            var cr  = ctx.getContentResolver();
-            var b = cr.call.overload("android.net.Uri", "java.lang.String", "java.lang.String", "android.os.Bundle")
-                .call(cr, Uri.parse(GUARD_URI), "suppress", null, null);
+            var b = guardCall("suppress");
             if (b === null) return null;
             var r = b.getString("reason");
             return r === null ? null : ("" + r);
@@ -77,6 +85,32 @@ Java.perform(function () {
         log("GUARDA HVAC ARMADA (BeanStatusBarManager.handleValue)");
     } catch (e) {
         log("guarda: hook falhou, servico segue no pm disable: " + e);
+    }
+
+    // Botao de A/C da barra lateral: BeanCarNavigationBarView.onClick chama
+    // AppUtils.Companion.startHVACApp, que abre o com.beantechs.hvac direto (sem passar
+    // pelo handleValue acima). Com o app de clima do OEM desativado nas opcoes de
+    // performance, o provider responde "handled" e abre a faixa do app no lugar; em
+    // qualquer outro caso (ou erro) segue o original.
+    try {
+        var AUC = Java.use("com.bean.utils.AppUtils$Companion");
+        AUC.startHVACApp.overloads.forEach(function (ov) {
+            ov.implementation = function () {
+                try {
+                    var b = guardCall("open");
+                    if (b !== null && b.getBoolean("handled")) {
+                        log("botao de A/C: app de clima do OEM desativado — abrindo a faixa");
+                        return;
+                    }
+                } catch (e) {
+                    log("botao de A/C: provider indisponivel (" + e + ") — segue o OEM");
+                }
+                return ov.apply(this, arguments);
+            };
+        });
+        log("botao de A/C da barra lateral interceptado (AppUtils.startHVACApp)");
+    } catch (e) {
+        log("botao de A/C: hook falhou: " + e);
     }
 
     // ── 2) temperatura externa real ─────────────────────────────────────────

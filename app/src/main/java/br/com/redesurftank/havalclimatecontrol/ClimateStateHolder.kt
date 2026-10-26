@@ -142,6 +142,18 @@ object ClimateStateHolder {
     @Volatile var onDebloatToggle: DebloatCallback? = null
 
     /**
+     * O SystemUI ia abrir o app de clima do OEM, que está desativado: no lugar dele, o
+     * serviço mostra a nossa faixa. `explicit` = toque no botão de A/C da barra lateral;
+     * aí, sem a faixa instalada, abre a tela cheia. Sem `explicit` (popup depois de uma
+     * mudança vinda de botão físico) e sem faixa, não abre nada. Chega do
+     * HvacGuardProvider, num thread de binder.
+     */
+    fun interface OemClimateRequest {
+        fun onRequest(explicit: Boolean)
+    }
+    @Volatile var onOemClimateRequest: OemClimateRequest? = null
+
+    /**
      * Avisa o serviço quando a nossa Activity entra e sai de foco.
      *
      * Serve para o serviço manter o HVAC do OEM desabilitado durante a sessão inteira,

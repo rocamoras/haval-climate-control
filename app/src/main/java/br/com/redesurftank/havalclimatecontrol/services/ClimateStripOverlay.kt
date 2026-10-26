@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.OpenInFull
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -206,6 +207,17 @@ class ClimateStripOverlay(private val context: Context) {
         y = 0
     }
 
+    /**
+     * Mostra a faixa sem o gesto — pedido do SystemUI quando o app de clima do OEM esta
+     * desativado (botao de A/C da barra lateral, botoes fisicos). Ja aberta, so renova o
+     * auto-ocultar. @return false se a faixa nao esta instalada.
+     */
+    fun show(): Boolean {
+        if (bar == null) return false
+        reveal()
+        return true
+    }
+
     private fun reveal() {
         val b = bar ?: return
         val lp = barParams ?: return
@@ -380,11 +392,22 @@ private fun ClimateStrip(onHome: () -> Unit, onOpenApp: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier.size(64.dp).chip().clickable(onClick = onHome),
-        ) {
-            Icon(Icons.Rounded.Home, contentDescription = "Tela inicial", tint = OemInk, modifier = Modifier.size(38.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(64.dp).chip().clickable(onClick = onHome),
+            ) {
+                Icon(Icons.Rounded.Home, contentDescription = "Tela inicial", tint = OemInk, modifier = Modifier.size(38.dp))
+            }
+            // Atalho explicito para a tela cheia: com o app de clima do OEM desativado, a
+            // faixa e o que o botao de A/C da barra lateral abre, e dali o caminho para o
+            // resto (bancos, desembaçador, configuracoes) tem que estar a um toque.
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(64.dp).chip().clickable(onClick = onOpenApp),
+            ) {
+                Icon(Icons.Rounded.OpenInFull, contentDescription = "Abrir o app", tint = OemInk, modifier = Modifier.size(34.dp))
+            }
         }
 
         // Com SYNC ligado o carro espelha o outro lado sozinho, como no OEM.

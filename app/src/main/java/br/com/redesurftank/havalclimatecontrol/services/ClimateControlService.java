@@ -42,6 +42,7 @@ import java.util.regex.Pattern;
 import br.com.redesurftank.havalclimatecontrol.App;
 import br.com.redesurftank.havalclimatecontrol.CarProps;
 import br.com.redesurftank.havalclimatecontrol.ClimateStateHolder;
+import br.com.redesurftank.havalclimatecontrol.MainActivity;
 import br.com.redesurftank.havalclimatecontrol.broadcastReceivers.RestartReceiver;
 import br.com.redesurftank.havalclimatecontrol.utils.DebloatUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.IPTablesUtils;
@@ -97,6 +98,19 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final float  TURBO_MIN_DROP        = 2f;
     // Mesmo fallback da tela: fan_speed_range quase nunca chega (ver CarProps).
     private static final int    FAN_SPEED_MAX_FALLBACK = 7;
+
+    // ── Modo desembaçador frontal ─────────────────────────────────────────────
+    // Ao ligar o desembaçador o firmware tira o AUTO e liga o AC por conta propria; nos
+    // so pomos o ar externo e, na saida, devolvemos AUTO e ciclo como estavam. Persistido
+    // pelo mesmo motivo do turbo: devolver o estado anterior continua sendo dever nosso
+    // mesmo que o servico morra no meio.
+    private static final String KEY_DEFROST_ACTIVE     = "defrost_active";
+    private static final String KEY_DEFROST_PREV_AUTO  = "defrost_prev_auto";
+    private static final String KEY_DEFROST_PREV_CYCLE = "defrost_prev_cycle";
+    // O firmware derruba o AUTO no mesmo burst do front_defrost_enable = 1, sem ordem
+    // garantida. Uma mudanca de AUTO/ciclo ate esta distancia do instante em que o
+    // desembaçador ligou conta como reacao a ele, e o estado "de antes" e o anterior a ela.
+    private static final long   DEFROST_SETTLE_MS      = 2_000;
 
     // ── Limpeza do experimento de country code (removido) ──────────────────────
     // A supressao da fileira online por persist.bean.country.code foi abandonada: o OEM
@@ -221,6 +235,20 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private boolean turboOverridden = false;
     private long    turboWriteMs    = 0;      // elapsedRealtime da ultima escrita do turbo
 
+    /** true enquanto estamos no modo desembaçador e cabe a nos devolver AUTO e ciclo. */
+    private boolean defrostActive    = false;
+    private String  defrostPrevAuto  = null;  // auto_enable de antes do desembaçador
+    private String  defrostPrevCycle = null;  // cycle_mode de antes do desembaçador
+
+    /** Valor atual, o anterior e quando trocou — por propriedade, so das que o modo
+     *  desembaçador precisa olhar "para tras". Mexido no binder e lido na avaliacao. */
+    private static final class PropHistory {
+        String value;
+        String before;
+        long   changedMs;   // elapsedRealtime
+    }
+    private final Map<String, PropHistory> propHistory = new HashMap<>();
+
     private boolean  isHvacSuspended    = false;
     private Runnable resumeHvacRunnable = null;
 
@@ -283,6 +311,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 PersistentLog.w(TAG, "carro reportou " + key + " = " + value);
             }
             dataCache.put(key, value);
+            recordHistory(key, value);
             // Coalesce: um burst de N propriedades dispara uma única avaliação após assentar.
             backgroundHandler.removeCallbacks(evalRunnable);
             backgroundHandler.postDelayed(evalRunnable, EVAL_DEBOUNCE_MS);
@@ -573,7 +602,10 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             String[] values = controlService.fetchDatas(CarProps.ALL);
             if (values != null) {
                 for (int i = 0; i < CarProps.ALL.length && i < values.length; i++) {
-                    if (values[i] != null) dataCache.put(CarProps.ALL[i], values[i]);
+                    if (values[i] != null) {
+                        dataCache.put(CarProps.ALL[i], values[i]);
+                        recordHistory(CarProps.ALL[i], values[i]);
+                    }
                 }
             }
 
@@ -616,7 +648,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             backgroundHandler.post(() -> {
                 if (ClimateStateHolder.INSTANCE.getUiVisible()) {
                     applyUiVisibility(true);
-                } else if (!isHvacSuspended) {
+                } else if (!isHvacSuspended && !oemHvacDisabled()) {
                     // Rede de seguranca: se o app morreu com o pacote desabilitado, o HVAC
                     // do OEM ficaria inutilizavel para sempre. `pm enable` e idempotente,
                     // custa um shell no start e limpa disable orfao de sessao anterior.
@@ -643,6 +675,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             if (turboActive) {
                 PersistentLog.w(TAG, "turbo estava ativo quando o servico caiu — retomando");
             }
+            SharedPreferences dpPrefs = App.getDeviceProtectedContext()
+                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            defrostActive    = dpPrefs.getBoolean(KEY_DEFROST_ACTIVE, false);
+            defrostPrevAuto  = dpPrefs.getString(KEY_DEFROST_PREV_AUTO, null);
+            defrostPrevCycle = dpPrefs.getString(KEY_DEFROST_PREV_CYCLE, null);
+            if (defrostActive) {
+                PersistentLog.w(TAG, "modo desembaçador estava ativo quando o servico caiu — retomando");
+            }
             ClimateStateHolder.INSTANCE.setOnEvaluateRequest(() -> {
                 backgroundHandler.removeCallbacks(evalRunnable);
                 backgroundHandler.post(evalRunnable);
@@ -660,11 +700,18 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private void evaluateClimateControl() {
         try {
-            if (!ClimateStateHolder.INSTANCE.getAutoControlEnabled()) {
+            boolean autoControl = ClimateStateHolder.INSTANCE.getAutoControlEnabled();
+            // Bloco D — Desembaçador frontal. Antes de qualquer saida antecipada: a volta
+            // ao estado anterior desfaz uma escrita nossa e vale mesmo com o controle
+            // automatico desligado ou o sensor da cabine offline.
+            String defrostLog = evaluateFrontDefrost(autoControl);
+
+            if (!autoControl) {
                 // O turbo e parte do controle automatico: desligado o controle, o AUTO
                 // que o turbo tirou tem que voltar — senao o HVAC fica preso no maximo.
-                String log = null;
-                if (turboActive && "1".equals(dataCache.get(CarProps.POWER_MODE))) {
+                String log = defrostLog;
+                if (turboActive && "1".equals(dataCache.get(CarProps.POWER_MODE))
+                        && !"1".equals(dataCache.get(CarProps.FRONT_DEFROST))) {
                     log = exitTurbo("controle automático do app desligado");
                 }
                 pushState(true, log);
@@ -674,7 +721,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             String insideTempStr = dataCache.get(CarProps.INSIDE_TEMP);
             if (insideTempStr == null) {
                 insideTempWasOffline = true;
-                pushState(true, null);
+                pushState(true, defrostLog);
                 return;
             }
             float insideTemp = Float.parseFloat(insideTempStr);
@@ -682,11 +729,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 // Sensor offline — car is off, ignore reading. Na partida o carro manda
                 // 87.5 (byte 0xFF: 255 * 0.5 - 40) antes da primeira leitura real.
                 insideTempWasOffline = true;
-                pushState(true, null);
+                pushState(true, defrostLog);
                 return;
             }
 
-            String logEntry = null;
+            String logEntry = defrostLog;
+            // Com o desembaçador o firmware tira o AUTO mas liga o AC: o controle do
+            // compressor pela temperatura interna continua valendo nesse modo.
+            boolean frontDefrostOn = "1".equals(dataCache.get(CarProps.FRONT_DEFROST));
 
             // Detectar partida do carro (transição offline → online)
             boolean carJustStarted = insideTempWasOffline;
@@ -703,7 +753,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 lastSentDriverVent    = null;
                 lastSentPassengerVent = null;
                 String acEnableStr = dataCache.get(CarProps.AC_ENABLE);
-                if (!"1".equals(acEnableStr) && "1".equals(dataCache.get(CarProps.AUTO_ENABLE))) {
+                if (!"1".equals(acEnableStr)
+                        && ("1".equals(dataCache.get(CarProps.AUTO_ENABLE)) || frontDefrostOn)) {
                     sendHvacCommand(CarProps.AC_ENABLE, "1");
                     dataCache.put(CarProps.AC_ENABLE, "1");
                     acOffTimestamp = 0;
@@ -717,9 +768,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             String turboLog = evaluateTurbo(insideTemp, carJustStarted);
             if (logEntry == null) logEntry = turboLog;
 
-            // Bloco A — AC + comfort curve (requer modo auto do HVAC ligado)
+            // Bloco A — AC (modo auto do HVAC ou desembaçador frontal) + comfort curve
+            // (so no modo auto)
             String autoEnable = dataCache.get(CarProps.AUTO_ENABLE);
-            if ("1".equals(autoEnable)) {
+            boolean autoOn = "1".equals(autoEnable);
+            if (autoOn || frontDefrostOn) {
                 String driverTempStr = dataCache.get(CarProps.DRIVER_TEMP);
                 String acEnableStr   = dataCache.get(CarProps.AC_ENABLE);
                 if (driverTempStr != null && acEnableStr != null) {
@@ -767,53 +820,57 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                         logEntry = timeFormat.format(new Date()) + "  " + msg;
                     }
 
-                    String currentCurve = dataCache.get(CarProps.COMFORT_CURVE);
-                    String cMode = ClimateStateHolder.INSTANCE.getComfortMode();
+                    // Curva de conforto: so no AUTO — fora dele quem manda no ar e o motorista
+                    // ou o desembaçador.
+                    if (autoOn) {
+                        String currentCurve = dataCache.get(CarProps.COMFORT_CURVE);
+                        String cMode = ClimateStateHolder.INSTANCE.getComfortMode();
 
-                    // Se o modo foi alterado pelo app, reinicia rastreamento para evitar falsos positivos
-                    if (!cMode.equals(prevComfortMode)) {
-                        lastSentComfortCurve = null;
-                        prevComfortMode = cMode;
-                    }
-
-                    // Se a curva foi alterada externamente (menu nativo do HVAC), converte para modo manual
-                    boolean externalComfortChange =
-                            lastSentComfortCurve != null && !lastSentComfortCurve.equals(currentCurve);
-
-                    if (externalComfortChange) {
-                        String msg = String.format(Locale.getDefault(),
-                                "Curva de conforto alterada externamente (%s) → modo manual", currentCurve);
-                        Log.w(TAG, msg);
-                        if (logEntry == null) logEntry = timeFormat.format(new Date()) + "  " + msg;
-                        final String finalCurve = currentCurve != null ? currentCurve : "1";
-                        mainHandler.post(() -> ClimateStateHolder.INSTANCE.notifyExternalComfortChange(finalCurve));
-                        // Não sobrescreve o valor externo — continua para pushState
-                    } else {
-                        String desiredCurve;
-                        switch (cMode) {
-                            case "SUAVE":  desiredCurve = "0"; break;
-                            case "NORMAL": desiredCurve = "1"; break;
-                            case "FORTE":  desiredCurve = "2"; break;
-                            default: {
-                                float oTemp = 0f;
-                                String oStr = dataCache.get(CarProps.OUTSIDE_TEMP);
-                                if (oStr != null) {
-                                    try { oTemp = Float.parseFloat(oStr); } catch (NumberFormatException ignored) {}
-                                }
-                                if (oTemp >= 24f)      desiredCurve = "2";
-                                else if (oTemp >= 19f) desiredCurve = "1";
-                                else                   desiredCurve = "0";
-                                break;
-                            }
+                        // Se o modo foi alterado pelo app, reinicia rastreamento para evitar falsos positivos
+                        if (!cMode.equals(prevComfortMode)) {
+                            lastSentComfortCurve = null;
+                            prevComfortMode = cMode;
                         }
-                        if (!desiredCurve.equals(currentCurve)) {
+
+                        // Se a curva foi alterada externamente (menu nativo do HVAC), converte para modo manual
+                        boolean externalComfortChange =
+                                lastSentComfortCurve != null && !lastSentComfortCurve.equals(currentCurve);
+
+                        if (externalComfortChange) {
                             String msg = String.format(Locale.getDefault(),
-                                    "Comfort curve → %s — interna %.1f°C", desiredCurve, insideTemp);
+                                    "Curva de conforto alterada externamente (%s) → modo manual", currentCurve);
                             Log.w(TAG, msg);
-                            lastSentComfortCurve = desiredCurve;
-                            sendHvacCommand(CarProps.COMFORT_CURVE, desiredCurve);
-                            dataCache.put(CarProps.COMFORT_CURVE, desiredCurve);
                             if (logEntry == null) logEntry = timeFormat.format(new Date()) + "  " + msg;
+                            final String finalCurve = currentCurve != null ? currentCurve : "1";
+                            mainHandler.post(() -> ClimateStateHolder.INSTANCE.notifyExternalComfortChange(finalCurve));
+                            // Não sobrescreve o valor externo — continua para pushState
+                        } else {
+                            String desiredCurve;
+                            switch (cMode) {
+                                case "SUAVE":  desiredCurve = "0"; break;
+                                case "NORMAL": desiredCurve = "1"; break;
+                                case "FORTE":  desiredCurve = "2"; break;
+                                default: {
+                                    float oTemp = 0f;
+                                    String oStr = dataCache.get(CarProps.OUTSIDE_TEMP);
+                                    if (oStr != null) {
+                                        try { oTemp = Float.parseFloat(oStr); } catch (NumberFormatException ignored) {}
+                                    }
+                                    if (oTemp >= 24f)      desiredCurve = "2";
+                                    else if (oTemp >= 19f) desiredCurve = "1";
+                                    else                   desiredCurve = "0";
+                                    break;
+                                }
+                            }
+                            if (!desiredCurve.equals(currentCurve)) {
+                                String msg = String.format(Locale.getDefault(),
+                                        "Comfort curve → %s — interna %.1f°C", desiredCurve, insideTemp);
+                                Log.w(TAG, msg);
+                                lastSentComfortCurve = desiredCurve;
+                                sendHvacCommand(CarProps.COMFORT_CURVE, desiredCurve);
+                                dataCache.put(CarProps.COMFORT_CURVE, desiredCurve);
+                                if (logEntry == null) logEntry = timeFormat.format(new Date()) + "  " + msg;
+                            }
                         }
                     }
                 }
@@ -921,6 +978,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         // religa-lo, e o dever de devolver o AUTO continua de pe para quando o motorista
         // ligar de novo.
         if (!"1".equals(dataCache.get(CarProps.POWER_MODE))) return null;
+        // Desembaçador frontal: o ar e do firmware ate ele desligar. Sair do turbo agora
+        // escreveria auto_enable = 1, que derruba o desembaçador no meio.
+        if ("1".equals(dataCache.get(CarProps.FRONT_DEFROST))) return null;
 
         ClimateStateHolder s = ClimateStateHolder.INSTANCE;
         int threshold = s.getTurboThreshold();
@@ -955,7 +1015,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         if (pastGrace && "1".equals(dataCache.get(CarProps.AUTO_ENABLE))) {
             setTurboActive(false);
             turboOverridden = true;
-            return logTurbo("Turbo cancelado — AUTO religado manualmente");
+            return logTransition("Turbo cancelado — AUTO religado manualmente");
         }
         return null;
     }
@@ -987,14 +1047,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         }
         turboWriteMs = SystemClock.elapsedRealtime();
         setTurboActive(true);
-        return logTurbo(reason + " → AUTO desligado, ventilador " + fanMax);
+        return logTransition(reason + " → AUTO desligado, ventilador " + fanMax);
     }
 
     private String exitTurbo(String reason) throws Exception {
         sendHvacCommand(CarProps.AUTO_ENABLE, "1");
         dataCache.put(CarProps.AUTO_ENABLE, "1");
         setTurboActive(false);
-        return logTurbo("Turbo desligado — " + reason + " → AUTO religado");
+        return logTransition("Turbo desligado — " + reason + " → AUTO religado");
     }
 
     private void setTurboActive(boolean active) {
@@ -1004,11 +1064,127 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 .edit().putBoolean(KEY_TURBO_ACTIVE, active).apply();
     }
 
-    /** Transicoes do turbo vao para o log persistente mesmo quando outra linha ganha o
-     *  unico slot de log da avaliacao — sao elas que explicam um ventilador no maximo. */
-    private String logTurbo(String msg) {
+    /** Transicoes do turbo e do desembaçador vao para o log persistente mesmo quando
+     *  outra linha ganha o unico slot de log da avaliacao — sao elas que explicam um
+     *  ventilador no maximo ou um ciclo de ar trocado sem ninguem ter tocado na tela. */
+    private String logTransition(String msg) {
         PersistentLog.w(TAG, msg);
         return timeFormat.format(new Date()) + "  " + msg;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Modo desembaçador frontal
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * Desembaçador ligado → ar externo; desligado → AUTO e ciclo de ar de volta ao que
+     * eram antes. Roda no backgroundHandler, no comeco de evaluateClimateControl.
+     *
+     * O resto do modo e do firmware: ele tira o AUTO, assume a distribuicao do ar e liga
+     * o AC. O compressor continua com o bloco A (histerese pela temperatura interna).
+     *
+     * Como o turbo, nao briga com o motorista: o ar externo e escrito uma vez na entrada;
+     * se ele voltar a recirculacao no meio do modo, fica assim ate a saida.
+     *
+     * @return a linha de log da transicao, ou null se nada mudou.
+     */
+    private String evaluateFrontDefrost(boolean autoControl) throws Exception {
+        // HVAC desligado: escrever auto_enable pode religa-lo. Entrada e saida esperam.
+        if (!"1".equals(dataCache.get(CarProps.POWER_MODE))) return null;
+
+        boolean defrostOn = "1".equals(dataCache.get(CarProps.FRONT_DEFROST));
+
+        if (!defrostActive) {
+            // Entrar e escolha do controle automatico; sair (abaixo) nao, porque desfaz
+            // uma escrita nossa.
+            if (!defrostOn || !autoControl) return null;
+            long onMs = historyChangedMs(CarProps.FRONT_DEFROST);
+            String prevAuto  = valueBefore(CarProps.AUTO_ENABLE, onMs);
+            String prevCycle = valueBefore(CarProps.CYCLE_MODE, onMs);
+            setDefrostActive(true, prevAuto, prevCycle);
+            if (!CarProps.CYCLE_FRESH.equals(dataCache.get(CarProps.CYCLE_MODE))) {
+                sendHvacCommand(CarProps.CYCLE_MODE, CarProps.CYCLE_FRESH);
+                dataCache.put(CarProps.CYCLE_MODE, CarProps.CYCLE_FRESH);
+            }
+            return logTransition("Desembaçador frontal ligado → ar externo (antes: AUTO="
+                    + prevAuto + ", ciclo=" + prevCycle + ")");
+        }
+
+        if (defrostOn) return null;
+
+        StringBuilder restored = new StringBuilder();
+        if (defrostPrevCycle != null && !defrostPrevCycle.equals(dataCache.get(CarProps.CYCLE_MODE))) {
+            sendHvacCommand(CarProps.CYCLE_MODE, defrostPrevCycle);
+            dataCache.put(CarProps.CYCLE_MODE, defrostPrevCycle);
+            restored.append("ciclo ").append(defrostPrevCycle);
+        }
+        // So devolve o AUTO, nunca o tira: se ele estava em manual, o firmware ja deixa
+        // em manual ao sair do desembaçador.
+        if ("1".equals(defrostPrevAuto) && !"1".equals(dataCache.get(CarProps.AUTO_ENABLE))) {
+            sendHvacCommand(CarProps.AUTO_ENABLE, "1");
+            dataCache.put(CarProps.AUTO_ENABLE, "1");
+            if (restored.length() > 0) restored.append(", ");
+            restored.append("AUTO religado");
+        }
+        setDefrostActive(false, null, null);
+        return logTransition("Desembaçador frontal desligado → "
+                + (restored.length() > 0 ? restored : "estado anterior já estava de volta"));
+    }
+
+    private void setDefrostActive(boolean active, String prevAuto, String prevCycle) {
+        defrostActive    = active;
+        defrostPrevAuto  = prevAuto;
+        defrostPrevCycle = prevCycle;
+        App.getDeviceProtectedContext()
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_DEFROST_ACTIVE, active)
+                .putString(KEY_DEFROST_PREV_AUTO, prevAuto)
+                .putString(KEY_DEFROST_PREV_CYCLE, prevCycle)
+                .apply();
+    }
+
+    /** Chamado no binder (onDataChanged) e na carga inicial. So guarda o que o modo
+     *  desembaçador precisa: quando ele ligou e o AUTO/ciclo de antes. */
+    private void recordHistory(String key, String value) {
+        if (!CarProps.FRONT_DEFROST.equals(key) && !CarProps.AUTO_ENABLE.equals(key)
+                && !CarProps.CYCLE_MODE.equals(key)) return;
+        synchronized (propHistory) {
+            PropHistory h = propHistory.get(key);
+            if (h == null) {
+                h = new PropHistory();
+                h.value = value;
+                propHistory.put(key, h);
+            } else if (!Objects.equals(h.value, value)) {
+                h.before    = h.value;
+                h.value     = value;
+                h.changedMs = SystemClock.elapsedRealtime();
+            }
+        }
+    }
+
+    private long historyChangedMs(String key) {
+        synchronized (propHistory) {
+            PropHistory h = propHistory.get(key);
+            return h != null ? h.changedMs : 0;
+        }
+    }
+
+    /**
+     * Valor de {@code key} de antes do instante {@code atMs}: se a ultima troca caiu a
+     * ate DEFROST_SETTLE_MS dele (antes ou depois), ela foi reacao do firmware e vale o
+     * valor anterior a ela; senao, o atual.
+     */
+    private String valueBefore(String key, long atMs) {
+        synchronized (propHistory) {
+            PropHistory h = propHistory.get(key);
+            if (h == null) return dataCache.get(key);
+            if (h.before != null && atMs > 0
+                    && Math.abs(h.changedMs - atMs) <= DEFROST_SETTLE_MS) {
+                return h.before;
+            }
+            return h.value;
+        }
     }
 
     /** Mesma regra da tela (intOf em OemClimateScreen): ultimo numero de fan_speed_range. */
@@ -1119,7 +1295,17 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         }
     }
 
+    /**
+     * O usuario desativou o app de clima do OEM nas opcoes de performance. Ai toda a
+     * supressao abaixo vira no-op: o pacote ja esta desativado, e qualquer `pm enable`
+     * daqui desfaria a escolha dele. Quem reativa e so o DebloatUtils, no toque em "Desl.".
+     */
+    private boolean oemHvacDisabled() {
+        return DebloatUtils.isWanted(DebloatUtils.Target.HVAC);
+    }
+
     private void suspendHvacNow() {
+        if (oemHvacDisabled()) return;
         ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "disable-user", "--user", "0", HVAC_PACKAGE_NAME});
         ShizukuUtils.runCommandAndGetOutput(new String[]{"am", "force-stop", HVAC_PACKAGE_NAME});
         isHvacSuspended = true;
@@ -1131,11 +1317,16 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             backgroundHandler.removeCallbacks(resumeHvacRunnable);
             resumeHvacRunnable = null;
         }
-        ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "enable", HVAC_PACKAGE_NAME});
+        if (!oemHvacDisabled()) {
+            ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "enable", HVAC_PACKAGE_NAME});
+        }
         isHvacSuspended = false;
     }
 
     private void ensureHvacSuspended(String triggerKey) {
+        // Antes do `dumpsys` do isHvacAppInForeground: com o pacote desativado de vez nao
+        // ha o que suspender, e cada escrita automatica pagaria um shell a toa.
+        if (oemHvacDisabled()) return;
         if (resumeHvacRunnable != null) {
             backgroundHandler.removeCallbacks(resumeHvacRunnable);
             resumeHvacRunnable = null;
@@ -1174,8 +1365,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 resumeHvacRunnable = null;
                 return;
             }
-            Log.w(TAG, "Reabilitando HVAC app");
-            ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "enable", HVAC_PACKAGE_NAME});
+            // O usuario pode ter desativado o app do OEM no meio da janela.
+            if (!oemHvacDisabled()) {
+                Log.w(TAG, "Reabilitando HVAC app");
+                ShizukuUtils.runCommandAndGetOutput(new String[]{"pm", "enable", HVAC_PACKAGE_NAME});
+            }
             isHvacSuspended = false;
             resumeHvacRunnable = null;
         };
@@ -1298,9 +1492,40 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         debloatBootstrapped = true;
 
         ClimateStateHolder.INSTANCE.setOnDebloatToggle(target ->
-                backgroundHandler.post(() -> DebloatUtils.reconcile(target,
-                        target == DebloatUtils.Target.WEATHER && realTempEnabled, true)));
+                backgroundHandler.post(() -> {
+                    DebloatUtils.reconcile(target,
+                            target == DebloatUtils.Target.WEATHER && realTempEnabled, true);
+                    // App de clima do OEM reativado com a NOSSA tela na frente: a supressao
+                    // da sessao era no-op enquanto ele estava desativado, e sem ela (guarda
+                    // desarmada) o popup dele roubaria o foco ja no proximo toque.
+                    if (target == DebloatUtils.Target.HVAC
+                            && ClimateStateHolder.INSTANCE.getUiVisible()) {
+                        applyUiVisibility(true);
+                    }
+                }));
         DebloatUtils.reconcileAll(realTempEnabled);
+
+        // App de clima do OEM desativado: o que o SystemUI abriria dele vem para ca.
+        ClimateStateHolder.INSTANCE.setOnOemClimateRequest(explicit ->
+                mainHandler.post(() -> openOurClimate(explicit)));
+    }
+
+    /**
+     * Mostra a faixa no lugar do app de clima do OEM. Sem a faixa instalada, so o toque
+     * explicito (botao de A/C da barra lateral) abre a tela cheia: um popup de botao fisico
+     * que virasse Activity roubaria o foco do Android Auto/CarPlay, igual ao do OEM fazia.
+     * Main thread.
+     */
+    private void openOurClimate(boolean explicit) {
+        if (!isServiceRunning) return;
+        if (climateStrip != null && climateStrip.show()) return;
+        if (!explicit) return;
+        try {
+            startActivity(new Intent(this, MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
+        } catch (Exception e) {
+            PersistentLog.e(TAG, "falha abrindo o app pelo botao de A/C da barra: " + e);
+        }
     }
 
     // ─────────────────────────────
@@ -1657,6 +1882,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(null);
         ClimateStateHolder.INSTANCE.setOnClimateStripToggle(null);
         ClimateStateHolder.INSTANCE.setOnDebloatToggle(null);
+        ClimateStateHolder.INSTANCE.setOnOemClimateRequest(null);
         // As janelas nao podem sobreviver a instancia: a nova, depois de um restart(), instala
         // as suas — e as velhas ficariam orfas, pegando toque na borda de baixo.
         if (climateStrip != null) climateStrip.uninstall();
