@@ -135,8 +135,25 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # Create local tag (ignore error if it already exists)
           git tag "$TAG" 2>/dev/null || echo "Tag $TAG already exists locally"
-          # Push tag to GitHub (ignore error if already pushed)
-          git push origin "$TAG" 2>/dev/null || echo "Tag $TAG already pushed"
+          # Push tag to GitHub. Antes o erro ia para /dev/null e qualquer falha virava
+          # "already pushed" — em 26/10 o push travou 21s por rede, a tag nunca chegou e
+          # o erro que apareceu foi o do gh release create, um passo depois. Agora: se a
+          # tag ja esta no remoto (re-run), pula; senao tenta 3 vezes com o erro visivel.
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG ja esta no remoto"
+          else
+            for attempt in 1 2 3; do
+              if git push origin "$TAG"; then
+                break
+              fi
+              if [ "$attempt" = 3 ]; then
+                echo "::error::push da tag $TAG falhou 3 vezes"
+                exit 1
+              fi
+              echo "::warning::push da tag $TAG falhou (tentativa $attempt) — tentando de novo em $((attempt * 10))s"
+              sleep $((attempt * 10))
+            done
+          fi
           # Create release, or just upload the APK if the release already exists
           gh release create "$TAG" $PRERELEASE \
             --title "haval-climate-control-${{ steps.get_version.outputs.VERSION }}" \
