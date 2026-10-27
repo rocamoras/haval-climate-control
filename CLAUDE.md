@@ -85,3 +85,9 @@ barra é o gatilho da virada: ≥75% na CARGA, ≤20% no USO.
 Arquivo ausente, linha ilegível ou `ts` com mais de `EV_MAX_AGE` (90s) → o card do
 ciclo sai da fileira e fica só o de clima. Mudar o formato exige mudar junto o
 `HomeCardState.java` do haval-ev-manager.
+
+### Selo TURBO
+
+O selo **TURBO** do card de clima vem de `/data/local/tmp/haval_home_card_turbo`
+(`1`/`0`), escrito pelo serviço só nas transições do turbo — o turbo tira o AUTO, então
+sem ele o card mostraria MANUAL.

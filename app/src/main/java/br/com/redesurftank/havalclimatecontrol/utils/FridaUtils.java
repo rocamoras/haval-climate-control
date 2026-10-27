@@ -48,6 +48,8 @@ public class FridaUtils {
 
     /** Arquivo de controle lido em runtime pelo script da MediaCenter (on/off). */
     public static final String HOME_CARD_CTRL_PATH = "/data/local/tmp/haval_home_card";
+    /** Turbo ativo, "1"/"0" — escrito pelo serviço, lido pelo card de clima. */
+    public static final String HOME_CARD_TURBO_PATH = "/data/local/tmp/haval_home_card_turbo";
     /** Arquivo de controle lido pelo script do SystemUI: pinta a temperatura real (on/off). */
     public static final String REAL_TEMP_CTRL_PATH = "/data/local/tmp/haval_real_temp";
 
@@ -211,6 +213,17 @@ public class FridaUtils {
 
     public static String mediaCenterPid() {
         return pidOf(TARGET_MEDIA_CENTER);
+    }
+
+    /**
+     * Selo TURBO do card de clima: o script lê {@link #HOME_CARD_TURBO_PATH} a cada
+     * tick. Só nas transições do turbo — cada escrita é um fork no shizuku_server.
+     */
+    public static void writeHomeCardTurbo(boolean active) {
+        ShizukuUtils.ShellResult r = ShizukuUtils.run(new String[]{"sh", "-c",
+                "echo " + (active ? "1" : "0") + " > " + HOME_CARD_TURBO_PATH
+                        + " && chmod 644 " + HOME_CARD_TURBO_PATH});
+        if (!r.ok()) Log.e(TAG, "[frida] falha ao gravar " + HOME_CARD_TURBO_PATH + ": " + r.describeFailure());
     }
 
     private static void writeCtrl(String path, boolean enabled) {

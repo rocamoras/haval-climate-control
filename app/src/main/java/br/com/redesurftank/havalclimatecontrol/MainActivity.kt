@@ -85,6 +85,7 @@ private const val KEY_REAL_OUTSIDE_TEMP    = "real_outside_temp_enabled"
 private const val KEY_HOME_CARD            = "home_card_enabled"
 private const val KEY_TURBO_ENABLED        = "turbo_enabled"
 private const val KEY_TURBO_THRESHOLD      = "turbo_threshold"
+private const val KEY_WELCOME_ENABLED      = "welcome_enabled"
 private const val UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
 // Prefs do serviço (device-protected). A flag do Shizuku mora aqui e não em UI_PREFS
@@ -459,6 +460,9 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     var turboThreshold by remember {
         mutableStateOf(prefs.getInt(KEY_TURBO_THRESHOLD, ClimateStateHolder.TURBO_THRESHOLD_DEFAULT))
     }
+    var welcomeEnabled by remember {
+        mutableStateOf(prefs.getBoolean(KEY_WELCOME_ENABLED, true))
+    }
     var showHelp     by remember { mutableStateOf(false) }
     var showCardHelp by remember { mutableStateOf(false) }
     val fridaAvailable = remember { FridaUtils.fridaToolsEmbedded() }
@@ -632,9 +636,25 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
             }
             Text(
                 "Com a cabine acima do limite, o ar sai do AUTO com a ventilação no máximo, " +
-                    "e volta ao AUTO quando a cabine chega à temperatura ajustada. " +
+                    "e volta ao AUTO quando a cabine cai 2°C abaixo do limite ou chega à " +
+                    "temperatura ajustada, o que vier primeiro. " +
                     "Depende do controle automático do app." +
                     (if (state.turboActive) "  ·  Ativo agora." else ""),
+                fontSize = 18.sp, color = OemInk3,
+                modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
+            )
+
+            OemRow("Boas vindas") {
+                OemSeg(listOf("Desl.", "Lig."), if (welcomeEnabled) 1 else 0, 400.dp) { i ->
+                    val enabled = i == 1
+                    welcomeEnabled       = enabled
+                    state.welcomeEnabled = enabled
+                    prefs.edit().putBoolean(KEY_WELCOME_ENABLED, enabled).apply()
+                }
+            }
+            Text(
+                "Ao ligar o carro, a ventilação vai a 6 por 5 segundos para tirar o ar parado " +
+                    "da cabine, e depois volta ao AUTO. Depende do controle automático do app.",
                 fontSize = 18.sp, color = OemInk3,
                 modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
             )

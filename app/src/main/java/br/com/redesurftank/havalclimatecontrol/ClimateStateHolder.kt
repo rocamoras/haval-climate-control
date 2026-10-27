@@ -110,6 +110,11 @@ object ClimateStateHolder {
     var turboThreshold by mutableStateOf(TURBO_THRESHOLD_DEFAULT)
     var turboActive    by mutableStateOf(false)
 
+    // ── Boas vindas ──────────────────────────────────────────────────────────
+    // Na partida o serviço põe o ventilador em 6 por 5s e depois devolve o AUTO.
+    // Espelho do climate_ui_prefs, populado pelo serviço no connect como o turbo.
+    var welcomeEnabled by mutableStateOf(true)
+
     /**
      * Pede ao serviço uma avaliação fora de hora. A avaliação normal só roda quando o
      * carro publica alguma propriedade — sem isto, desligar o turbo (ou o controle

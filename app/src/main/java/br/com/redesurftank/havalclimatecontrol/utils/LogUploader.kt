@@ -203,6 +203,7 @@ object LogUploader {
             appendLine("card na home        : ${state.homeCardEnabled}")
             appendLine("controle automatico : ${state.autoControlEnabled}")
             appendLine("turbo               : ${state.turboEnabled} (limiar ${state.turboThreshold}°C, ativo=${state.turboActive})")
+            appendLine("boas vindas         : ${state.welcomeEnabled}")
             appendLine()
 
             appendLine("----- injecoes Frida -----")

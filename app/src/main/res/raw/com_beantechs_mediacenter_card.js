@@ -44,6 +44,10 @@
  *   "on"  -> fileira esvaziada e içada, título escondido, card desenhado
  *   "off" (ou arquivo ausente) -> restaura fileira, margem e título originais
  *
+ * Selo TURBO por /data/local/tmp/haval_home_card_turbo ("1"/"0"), escrito pelo app
+ * nas transições do modo turbo. O turbo tira o HVAC do AUTO, então sem este arquivo
+ * o card mostraria "MANUAL" — e o estado do turbo só existe no app, não no veículo.
+ *
  * ── segundo card: ciclo automático do haval-ev-manager ──────────────────────
  * Este agente é o ÚNICO no processo da MediaCenter. O haval-ev-manager já tentou
  * ter o seu (v1.7.0 dele) e derrubou o ART em campo: SIGSEGV em MterpInvokeVirtual
@@ -64,6 +68,7 @@ function log(m) { console.log("[hcc-card] " + m); }
 Java.perform(function () {
 
     var CTRL = "/data/local/tmp/haval_home_card";
+    var TURBO_FLAG = "/data/local/tmp/haval_home_card_turbo";
     var ACT  = "com.beantechs.mediacenter.mainmodel1xos.ui.MediaCenterActivity";
     var IMPL_CLS = "com.beantechs.mediacenter.core_onlineosmodel.OnlineOsModelImpl";
     var OUR_PKG  = "br.com.redesurftank.havalclimatecontrol";
@@ -213,12 +218,14 @@ Java.perform(function () {
             ac:     readNum(K_AC) === 1,
             auto:   readNum(K_AUTO) === 1,
             temp:   tempOk ? inside : null,
-            fan:    Math.max(0, Math.min(FAN_MAX, Math.round(readNum(K_FAN) || 0)))
+            fan:    Math.max(0, Math.min(FAN_MAX, Math.round(readNum(K_FAN) || 0))),
+            // arquivo ausente (app antigo, nunca entrou em turbo) = sem selo
+            turbo:  on && readLine(TURBO_FLAG) === "1"
         };
     }
 
     function stateSig(s) {
-        return [s.on, s.ac, s.auto, (s.temp === null ? "x" : Math.round(s.temp)), s.fan].join("|");
+        return [s.on, s.ac, s.auto, s.turbo, (s.temp === null ? "x" : Math.round(s.temp)), s.fan].join("|");
     }
 
     // ── estado do ciclo automático (vem do haval-ev-manager) ────────────────
@@ -451,17 +458,19 @@ Java.perform(function () {
 
         var acOn   = s.on && s.ac;
         var autoOn = s.on && s.auto;
+        // turbo: selo e barras do vento em âmbar, como o USO do card do ciclo
+        var turbo  = s.turbo;
+        var modeC  = turbo ? C_AMBER : autoOn ? C_ACCENT : C_FAINT;
 
         // ── cabeçalho: rótulo + selo de modo ──
         text(cv, "CLIMA", PAD, 52,
             textPaint(C_DIM, 17, "sans-serif-medium", 0.18));
 
-        var badge   = s.on ? (s.auto ? "AUTO" : "MANUAL") : "OFF";
-        var badgeP  = textPaint(autoOn ? C_ACCENT : C_FAINT, 16, "monospace", 0.06);
+        var badge   = !s.on ? "OFF" : turbo ? "TURBO" : s.auto ? "AUTO" : "MANUAL";
+        var badgeP  = textPaint(modeC, 16, "monospace", 0.06);
         var badgeW  = badgeP.measureText.overload("java.lang.String").call(badgeP, badge);
         text(cv, badge, W - PAD - badgeW, 52, badgeP);
-        circle(cv, W - PAD - badgeW - 16, 46, 5,
-            newPaint(autoOn ? C_ACCENT : C_FAINT, false, 0));
+        circle(cv, W - PAD - badgeW - 16, 46, 5, newPaint(modeC, false, 0));
 
         // ── meio: tile do A/C + temperatura interna ──
         var tileX = PAD, tileY = 98, tileS = 88;
@@ -500,9 +509,9 @@ Java.perform(function () {
             var bx   = barsL + i * (barW + gap);
             var fill = s.on && i < s.fan;
             roundRect(cv, bx, cy - 6, bx + barW, cy + 6, 3,
-                newPaint(fill ? C_FG : C_SURFACE2, false, 0));
+                newPaint(fill ? (turbo ? C_AMBER : C_FG) : C_SURFACE2, false, 0));
             roundRect(cv, bx + 0.5, cy - 5.5, bx + barW - 0.5, cy + 5.5, 3,
-                newPaint(fill ? C_MUTED : C_BORDER, true, 1));
+                newPaint(fill ? (turbo ? C_AMBER_EDGE : C_MUTED) : C_BORDER, true, 1));
         }
         return bmp;
     }
@@ -1084,6 +1093,8 @@ Java.perform(function () {
          ["readState",  function () { return readState() !== null; }],
          ["stateSig",   function () { return stateSig(readState()).length > 0; }],
          ["drawCard",   function () { return drawCard(readState()) !== null; }],
+         ["drawTurbo",  function () {
+             return drawCard({on:true, ac:true, auto:false, turbo:true, temp:41, fan:7}) !== null; }],
          ["readCtrl",   function () { return typeof readCtrl() === "boolean"; }],
          ["parseKv",    function () { return parseKv("a=1;b=--").a === "1"; }],
          ["intOrNull",  function () { return intOrNull("--") === null && intOrNull("20") === 20; }],

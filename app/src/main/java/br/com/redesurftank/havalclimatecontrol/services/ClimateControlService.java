@@ -93,11 +93,31 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // Janela depois de uma escrita do turbo em que auto_enable = 1 NAO conta como o
     // motorista religando o AUTO — pode ser o eco atrasado do valor anterior.
     private static final long   TURBO_GRACE_MS        = 5_000;
-    // Folga minima entre o limiar e a temperatura de saida. Sem ela, um alvo acima do
-    // limiar (ou ilegivel, como "LO") faria o turbo ligar e desligar a cada leitura.
+    // Saida do turbo: a cabine TURBO_MIN_DROP abaixo do limiar, ou antes disso se ela
+    // chegar a temperatura ajustada — mas nunca a menos de TURBO_MIN_GAP do limiar. Sem
+    // essa folga, um ajustado acima do limiar faria o turbo ligar e desligar a cada leitura.
     private static final float  TURBO_MIN_DROP        = 2f;
+    private static final float  TURBO_MIN_GAP         = 1f;
     // Mesmo fallback da tela: fan_speed_range quase nunca chega (ver CarProps).
     private static final int    FAN_SPEED_MAX_FALLBACK = 7;
+
+    // ── Boas vindas ───────────────────────────────────────────────────────────
+    // Na partida, ventilador em WELCOME_FAN por WELCOME_MS para tirar o ar parado da
+    // cabine; depois AUTO/ventilador voltam ao que eram. Persistido pelo mesmo motivo do
+    // turbo: se o servico morrer nesses segundos, devolver o estado ainda e dever nosso.
+    private static final String KEY_WELCOME_ENABLED   = "welcome_enabled";
+    private static final String KEY_WELCOME_ACTIVE    = "welcome_active";
+    private static final String KEY_WELCOME_START_MS  = "welcome_start_ms";   // elapsedRealtime
+    private static final String KEY_WELCOME_PREV_AUTO = "welcome_prev_auto";
+    private static final String KEY_WELCOME_PREV_FAN  = "welcome_prev_fan";
+    private static final int    WELCOME_FAN           = 6;
+    private static final long   WELCOME_MS            = 5_000;
+    // Na partida o HVAC pode publicar power_mode depois da primeira leitura da cabine:
+    // a boas vindas espera ele ligar por ate este tempo, e desiste depois.
+    private static final long   WELCOME_WAIT_MS       = 15_000;
+    // Servico subindo com a cabine ja online: so e partida se a central acabou de ligar.
+    // Depois disso e o servico reiniciando no meio do trajeto, e o ventilador fica quieto.
+    private static final long   WELCOME_BOOT_WINDOW_MS = 3 * 60_000;
 
     // ── Modo desembaçador frontal ─────────────────────────────────────────────
     // Ao ligar o desembaçador o firmware tira o AUTO e liga o AC por conta propria; nos
@@ -235,6 +255,17 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private boolean turboOverridden = false;
     private long    turboWriteMs    = 0;      // elapsedRealtime da ultima escrita do turbo
 
+    /** A cabine foi vista offline (87,5) por esta instancia: a proxima leitura valida e
+     *  partida de verdade, e nao o servico reiniciando com o carro ja andando. */
+    private boolean sawInsideTempOffline = false;
+    /** Partida detectada, boas vindas ainda nao aplicada (esperando o HVAC ligar). */
+    private long    welcomePendingMs = 0;     // elapsedRealtime da partida; 0 = nada pendente
+    /** true enquanto o ventilador esta em WELCOME_FAN por nossa conta. */
+    private boolean welcomeActive    = false;
+    private long    welcomeStartMs   = 0;     // elapsedRealtime da escrita
+    private String  welcomePrevAuto  = null;  // auto_enable de antes da boas vindas
+    private String  welcomePrevFan   = null;  // fan_speed de antes da boas vindas
+
     /** true enquanto estamos no modo desembaçador e cabe a nos devolver AUTO e ciclo. */
     private boolean defrostActive    = false;
     private String  defrostPrevAuto  = null;  // auto_enable de antes do desembaçador
@@ -292,6 +323,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // Instância única e estável para coalescência via removeCallbacks/postDelayed.
     // Mantida SEPARADA de acOffCheckRunnable para não cancelar o recheck de 62s do AC.
     private final Runnable evalRunnable        = this::evaluateClimateControl;
+    // Instancia propria: o debounce das propriedades remove evalRunnable, e o fim da boas
+    // vindas nao pode ser cancelado por uma rajada de leituras.
+    private final Runnable welcomeRunnable     = this::evaluateClimateControl;
 
     // Rastreamento do último valor enviado pelo app — usado para detectar alterações externas
     private volatile String  lastSentDriverVent    = null;
@@ -666,17 +700,27 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                         uiPrefs.getBoolean(KEY_TURBO_ENABLED, true));
                 ClimateStateHolder.INSTANCE.setTurboThreshold(uiPrefs.getInt(
                         KEY_TURBO_THRESHOLD, ClimateStateHolder.TURBO_THRESHOLD_DEFAULT));
+                ClimateStateHolder.INSTANCE.setWelcomeEnabled(
+                        uiPrefs.getBoolean(KEY_WELCOME_ENABLED, true));
             } catch (Exception e) {
                 Log.w(TAG, "Falha lendo prefs do turbo: " + e.getMessage());
             }
-            turboActive = App.getDeviceProtectedContext()
-                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                    .getBoolean(KEY_TURBO_ACTIVE, false);
+            SharedPreferences dpPrefs = App.getDeviceProtectedContext()
+                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            turboActive = dpPrefs.getBoolean(KEY_TURBO_ACTIVE, false);
             if (turboActive) {
                 PersistentLog.w(TAG, "turbo estava ativo quando o servico caiu — retomando");
             }
-            SharedPreferences dpPrefs = App.getDeviceProtectedContext()
-                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            // O selo do card pode ter ficado do servico anterior: sincroniza com o estado real.
+            final boolean turboAtStart = turboActive;
+            backgroundHandler.post(() -> FridaUtils.writeHomeCardTurbo(turboAtStart));
+            welcomeActive   = dpPrefs.getBoolean(KEY_WELCOME_ACTIVE, false);
+            welcomeStartMs  = dpPrefs.getLong(KEY_WELCOME_START_MS, 0);
+            welcomePrevAuto = dpPrefs.getString(KEY_WELCOME_PREV_AUTO, null);
+            welcomePrevFan  = dpPrefs.getString(KEY_WELCOME_PREV_FAN, null);
+            if (welcomeActive) {
+                PersistentLog.w(TAG, "boas vindas estava ativa quando o servico caiu — devolvendo o ventilador");
+            }
             defrostActive    = dpPrefs.getBoolean(KEY_DEFROST_ACTIVE, false);
             defrostPrevAuto  = dpPrefs.getString(KEY_DEFROST_PREV_AUTO, null);
             defrostPrevCycle = dpPrefs.getString(KEY_DEFROST_PREV_CYCLE, null);
@@ -704,12 +748,16 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             // Bloco D — Desembaçador frontal. Antes de qualquer saida antecipada: a volta
             // ao estado anterior desfaz uma escrita nossa e vale mesmo com o controle
             // automatico desligado ou o sensor da cabine offline.
-            String defrostLog = evaluateFrontDefrost(autoControl);
+            String earlyLog = evaluateFrontDefrost(autoControl);
+            // Bloco W (saida) — Boas vindas. Pelo mesmo motivo: devolver o ventilador
+            // desfaz uma escrita nossa e nao depende do controle automatico.
+            String welcomeEndLog = evaluateWelcomeEnd();
+            if (earlyLog == null) earlyLog = welcomeEndLog;
 
             if (!autoControl) {
                 // O turbo e parte do controle automatico: desligado o controle, o AUTO
                 // que o turbo tirou tem que voltar — senao o HVAC fica preso no maximo.
-                String log = defrostLog;
+                String log = earlyLog;
                 if (turboActive && "1".equals(dataCache.get(CarProps.POWER_MODE))
                         && !"1".equals(dataCache.get(CarProps.FRONT_DEFROST))) {
                     log = exitTurbo("controle automático do app desligado");
@@ -721,7 +769,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             String insideTempStr = dataCache.get(CarProps.INSIDE_TEMP);
             if (insideTempStr == null) {
                 insideTempWasOffline = true;
-                pushState(true, defrostLog);
+                pushState(true, earlyLog);
                 return;
             }
             float insideTemp = Float.parseFloat(insideTempStr);
@@ -729,11 +777,12 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 // Sensor offline — car is off, ignore reading. Na partida o carro manda
                 // 87.5 (byte 0xFF: 255 * 0.5 - 40) antes da primeira leitura real.
                 insideTempWasOffline = true;
-                pushState(true, defrostLog);
+                sawInsideTempOffline = true;
+                pushState(true, earlyLog);
                 return;
             }
 
-            String logEntry = defrostLog;
+            String logEntry = earlyLog;
             // Com o desembaçador o firmware tira o AUTO mas liga o AC: o controle do
             // compressor pela temperatura interna continua valendo nesse modo.
             boolean frontDefrostOn = "1".equals(dataCache.get(CarProps.FRONT_DEFROST));
@@ -744,6 +793,10 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 insideTempWasOffline = false;
                 carStartTimestamp    = System.currentTimeMillis();
                 Log.w(TAG, "Partida do carro detectada — AC protegido por 30s");
+                if (sawInsideTempOffline
+                        || SystemClock.elapsedRealtime() < WELCOME_BOOT_WINDOW_MS) {
+                    welcomePendingMs = SystemClock.elapsedRealtime();
+                }
 
                 // Na partida, o firmware do HVAC reseta comfort_curve e ventilação para os
                 // padrões dele. Zeramos o rastreamento de mudança externa para NÃO interpretar
@@ -767,6 +820,12 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             // dataCache, e o bloco A (que exige AUTO) deixa de mexer no AC e na curva.
             String turboLog = evaluateTurbo(insideTemp, carJustStarted);
             if (logEntry == null) logEntry = turboLog;
+
+            // Bloco W (entrada) — Boas vindas. Depois do turbo: com a cabine acima do
+            // limiar ele ja pos o ventilador no maximo, e a boas vindas desiste. Antes do
+            // bloco A pelo mesmo motivo dele: fora do AUTO o bloco A nao mexe na curva.
+            String welcomeLog = evaluateWelcomeStart();
+            if (logEntry == null) logEntry = welcomeLog;
 
             // Bloco A — AC (modo auto do HVAC ou desembaçador frontal) + comfort curve
             // (so no modo auto)
@@ -1020,12 +1079,14 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         return null;
     }
 
-    /** Alvo de saida: a temperatura ajustada do motorista, mas sempre pelo menos
-     *  TURBO_MIN_DROP abaixo do limiar. */
+    /** Alvo de saida: o que a cabine atingir primeiro — limiar - TURBO_MIN_DROP ou a
+     *  temperatura ajustada do motorista. O ajustado so vale ate TURBO_MIN_GAP abaixo do
+     *  limiar: acima disso o turbo sairia na mesma leitura em que entrou. */
     private float turboExitTemp(int threshold) {
         float exitTemp = threshold - TURBO_MIN_DROP;
         try {
-            exitTemp = Math.min(exitTemp, Float.parseFloat(dataCache.get(CarProps.DRIVER_TEMP)));
+            float setTemp = Float.parseFloat(dataCache.get(CarProps.DRIVER_TEMP));
+            if (setTemp > exitTemp && setTemp <= threshold - TURBO_MIN_GAP) exitTemp = setTemp;
         } catch (RuntimeException ignored) {}   // null ou "LO"/"HI": fica o limiar - folga
         return exitTemp;
     }
@@ -1058,10 +1119,130 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     }
 
     private void setTurboActive(boolean active) {
+        if (active != turboActive) FridaUtils.writeHomeCardTurbo(active);
         turboActive = active;
         App.getDeviceProtectedContext()
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit().putBoolean(KEY_TURBO_ACTIVE, active).apply();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Boas vindas
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * Partida pendente → ventilador em WELCOME_FAN (fora do AUTO, como o turbo) e agenda
+     * a saida para daqui a WELCOME_MS. Roda dentro de evaluateClimateControl, depois do
+     * turbo. Desiste se o turbo ja assumiu, se o desembaçador esta ligado ou se o HVAC
+     * nao ligar em WELCOME_WAIT_MS.
+     *
+     * @return a linha de log da transicao, ou null se nada mudou.
+     */
+    private String evaluateWelcomeStart() throws Exception {
+        if (welcomePendingMs == 0) return null;
+        if (!ClimateStateHolder.INSTANCE.getWelcomeEnabled() || turboActive || welcomeActive
+                || "1".equals(dataCache.get(CarProps.FRONT_DEFROST))) {
+            welcomePendingMs = 0;
+            return null;
+        }
+        if (!"1".equals(dataCache.get(CarProps.POWER_MODE))) {
+            if (SystemClock.elapsedRealtime() - welcomePendingMs > WELCOME_WAIT_MS) {
+                welcomePendingMs = 0;
+                PersistentLog.w(TAG, "Boas vindas descartada — HVAC desligado na partida");
+            }
+            return null;
+        }
+        welcomePendingMs = 0;
+
+        int    fanSpeed = Math.min(WELCOME_FAN, fanSpeedMax());
+        String fan      = String.valueOf(fanSpeed);
+        String prevAuto = dataCache.get(CarProps.AUTO_ENABLE);
+        String prevFan  = dataCache.get(CarProps.FAN_SPEED);
+        boolean autoOn  = "1".equals(prevAuto);
+        // Manual e ja com o ventilador forte: o motorista escolheu, nao ha o que fazer.
+        if (!autoOn && parseFan(prevFan) >= fanSpeed) return null;
+
+        if (autoOn) {
+            sendHvacCommand(CarProps.AUTO_ENABLE, "0");
+            dataCache.put(CarProps.AUTO_ENABLE, "0");
+        }
+        sendHvacCommand(CarProps.FAN_SPEED, fan);
+        dataCache.put(CarProps.FAN_SPEED, fan);
+        setWelcomeActive(true, SystemClock.elapsedRealtime(), prevAuto, prevFan);
+        backgroundHandler.removeCallbacks(welcomeRunnable);
+        backgroundHandler.postDelayed(welcomeRunnable, WELCOME_MS);
+        return logTransition("Boas vindas — ventilador " + fan + " por " + (WELCOME_MS / 1000)
+                + "s (antes: AUTO=" + prevAuto + ", ventilador=" + prevFan + ")");
+    }
+
+    /**
+     * Passados WELCOME_MS, devolve o AUTO (ou o ventilador manual de antes). Se o
+     * motorista mexeu no ar nesse meio tempo, fica como ele deixou. Roda no comeco de
+     * evaluateClimateControl, antes da saida pelo controle automatico desligado.
+     *
+     * @return a linha de log da transicao, ou null se nada mudou.
+     */
+    private String evaluateWelcomeEnd() throws Exception {
+        if (!welcomeActive) return null;
+        long elapsed = SystemClock.elapsedRealtime() - welcomeStartMs;
+        // elapsed < 0: a central reiniciou no meio (elapsedRealtime recomeca do zero) — ja venceu.
+        if (elapsed >= 0 && elapsed < WELCOME_MS) {
+            backgroundHandler.removeCallbacks(welcomeRunnable);
+            backgroundHandler.postDelayed(welcomeRunnable, WELCOME_MS - elapsed);
+            return null;
+        }
+        // HVAC desligado: escrever auto_enable pode religa-lo. Desembaçador: o ar e do
+        // firmware, e religar o AUTO o derrubaria. Nos dois casos o dever espera.
+        if (!"1".equals(dataCache.get(CarProps.POWER_MODE))) return null;
+        if ("1".equals(dataCache.get(CarProps.FRONT_DEFROST))) return null;
+
+        String ours = String.valueOf(Math.min(WELCOME_FAN, fanSpeedMax()));
+        String fan  = dataCache.get(CarProps.FAN_SPEED);
+        if ("1".equals(dataCache.get(CarProps.AUTO_ENABLE)) || !ours.equals(fan)) {
+            setWelcomeActive(false, 0, null, null);
+            return logTransition("Boas vindas encerrada — ar mexido pelo motorista, fica como está");
+        }
+
+        String restored;
+        if ("1".equals(welcomePrevAuto)) {
+            sendHvacCommand(CarProps.AUTO_ENABLE, "1");
+            dataCache.put(CarProps.AUTO_ENABLE, "1");
+            restored = "AUTO religado";
+        } else if (parseFan(welcomePrevFan) >= 1) {
+            // Ventilador 0 nao e devolvido: em manual ele pode desligar o HVAC inteiro.
+            sendHvacCommand(CarProps.FAN_SPEED, welcomePrevFan);
+            dataCache.put(CarProps.FAN_SPEED, welcomePrevFan);
+            restored = "ventilador " + welcomePrevFan;
+        } else {
+            restored = "ventilador fica em " + fan;
+        }
+        setWelcomeActive(false, 0, null, null);
+        return logTransition("Boas vindas encerrada → " + restored);
+    }
+
+    private void setWelcomeActive(boolean active, long startMs, String prevAuto, String prevFan) {
+        welcomeActive   = active;
+        welcomeStartMs  = startMs;
+        welcomePrevAuto = prevAuto;
+        welcomePrevFan  = prevFan;
+        if (!active) backgroundHandler.removeCallbacks(welcomeRunnable);
+        App.getDeviceProtectedContext()
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_WELCOME_ACTIVE, active)
+                .putLong(KEY_WELCOME_START_MS, startMs)
+                .putString(KEY_WELCOME_PREV_AUTO, prevAuto)
+                .putString(KEY_WELCOME_PREV_FAN, prevFan)
+                .apply();
+    }
+
+    /** fan_speed como inteiro; -1 se ausente ou ilegivel. */
+    private static int parseFan(String raw) {
+        try {
+            return raw == null ? -1 : Math.round(Float.parseFloat(raw));
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     /** Transicoes do turbo e do desembaçador vao para o log persistente mesmo quando
