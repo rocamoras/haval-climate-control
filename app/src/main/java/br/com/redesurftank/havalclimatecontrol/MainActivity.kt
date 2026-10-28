@@ -653,8 +653,9 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 }
             }
             Text(
-                "Ao ligar o carro, a ventilação vai a 6 por 5 segundos para tirar o ar parado " +
-                    "da cabine, e depois volta ao AUTO. Depende do controle automático do app.",
+                "Ao ligar o carro, a ventilação vai a 6 por 8 segundos para tirar o ar parado " +
+                    "da cabine, e depois volta ao AUTO. Não roda se a temperatura interna já " +
+                    "estiver igual ou abaixo da ajustada. Depende do controle automático do app.",
                 fontSize = 18.sp, color = OemInk3,
                 modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
             )

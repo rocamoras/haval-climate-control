@@ -111,7 +111,7 @@ object ClimateStateHolder {
     var turboActive    by mutableStateOf(false)
 
     // ── Boas vindas ──────────────────────────────────────────────────────────
-    // Na partida o serviço põe o ventilador em 6 por 5s e depois devolve o AUTO.
+    // Na partida o serviço põe o ventilador em 6 por 8s e depois devolve o AUTO.
     // Espelho do climate_ui_prefs, populado pelo serviço no connect como o turbo.
     var welcomeEnabled by mutableStateOf(true)
 

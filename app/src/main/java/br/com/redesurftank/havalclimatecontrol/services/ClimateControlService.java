@@ -111,7 +111,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String KEY_WELCOME_PREV_AUTO = "welcome_prev_auto";
     private static final String KEY_WELCOME_PREV_FAN  = "welcome_prev_fan";
     private static final int    WELCOME_FAN           = 6;
-    private static final long   WELCOME_MS            = 5_000;
+    // 8s e nao 5: o carro segura o 6 pelo tempo exato, mas o motor leva ~1,5s para
+    // subir e outro tanto para descer — com 5s o ar forte mal passava de 3s.
+    private static final long   WELCOME_MS            = 8_000;
     // Na partida o HVAC pode publicar power_mode depois da primeira leitura da cabine:
     // a boas vindas espera ele ligar por ate este tempo, e desiste depois.
     private static final long   WELCOME_WAIT_MS       = 15_000;
@@ -824,7 +826,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             // Bloco W (entrada) — Boas vindas. Depois do turbo: com a cabine acima do
             // limiar ele ja pos o ventilador no maximo, e a boas vindas desiste. Antes do
             // bloco A pelo mesmo motivo dele: fora do AUTO o bloco A nao mexe na curva.
-            String welcomeLog = evaluateWelcomeStart();
+            String welcomeLog = evaluateWelcomeStart(insideTemp);
             if (logEntry == null) logEntry = welcomeLog;
 
             // Bloco A — AC (modo auto do HVAC ou desembaçador frontal) + comfort curve
@@ -1133,17 +1135,30 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     /**
      * Partida pendente → ventilador em WELCOME_FAN (fora do AUTO, como o turbo) e agenda
      * a saida para daqui a WELCOME_MS. Roda dentro de evaluateClimateControl, depois do
-     * turbo. Desiste se o turbo ja assumiu, se o desembaçador esta ligado ou se o HVAC
-     * nao ligar em WELCOME_WAIT_MS.
+     * turbo. Desiste se o turbo ja assumiu, se o desembaçador esta ligado, se a cabine
+     * ja esta na temperatura ajustada (ou abaixo) ou se o HVAC nao ligar em WELCOME_WAIT_MS.
      *
      * @return a linha de log da transicao, ou null se nada mudou.
      */
-    private String evaluateWelcomeStart() throws Exception {
+    private String evaluateWelcomeStart(float insideTemp) throws Exception {
         if (welcomePendingMs == 0) return null;
         if (!ClimateStateHolder.INSTANCE.getWelcomeEnabled() || turboActive || welcomeActive
                 || "1".equals(dataCache.get(CarProps.FRONT_DEFROST))) {
             welcomePendingMs = 0;
             return null;
+        }
+        // Cabine ja fria: nao ha ar quente parado para tirar. Sem o ajustado ainda, segue.
+        String driverTempStr = dataCache.get(CarProps.DRIVER_TEMP);
+        if (driverTempStr != null) {
+            try {
+                float setTemp = Float.parseFloat(driverTempStr);
+                if (insideTemp <= setTemp) {
+                    welcomePendingMs = 0;
+                    PersistentLog.w(TAG, String.format(Locale.getDefault(),
+                            "Boas vindas descartada — interna %.1f°C ≤ set %.1f°C", insideTemp, setTemp));
+                    return null;
+                }
+            } catch (NumberFormatException ignored) {}
         }
         if (!"1".equals(dataCache.get(CarProps.POWER_MODE))) {
             if (SystemClock.elapsedRealtime() - welcomePendingMs > WELCOME_WAIT_MS) {
