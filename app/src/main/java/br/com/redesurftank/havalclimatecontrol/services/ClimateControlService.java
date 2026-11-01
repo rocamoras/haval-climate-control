@@ -18,6 +18,7 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.os.UserManager;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
@@ -300,6 +301,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private volatile boolean homeCardEnabled    = false;
     private volatile boolean homeCardBootstrapped = false;
     private volatile boolean homeCardInjected     = false;
+    /** Card e SystemUI entraram pelo telnet, antes do binder do Shizuku (earlyFridaBoot). */
+    private volatile boolean fridaEarlyBoot       = false;
     private String  injectedMediaCenterPid      = "";
     /** pid onde a injecao do card ja falhou por falta das classes; "" se nenhum. */
     private String  homeCardWrongPid            = "";
@@ -517,6 +520,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             binderWaitStartedMs = SystemClock.elapsedRealtime();
                             Shizuku.addBinderReceivedListenerSticky(binderReceivedListener);
                             backgroundHandler.postDelayed(timeoutRunnable, SHIZUKU_BOOTSTRAP_TIMEOUT_MS);
+                            earlyFridaBoot();
                         } catch (Exception e) {
                             // Backoff exponencial (1s→2s→…→30s) para não martelar o Telnet em falha persistente.
                             int  attempt = ++bootstrapAttempt[0];
@@ -582,6 +586,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         backgroundHandler.post(this::bootstrapClimateStrip);
         // Opcoes de performance. Depois do SystemUI na fila: precisa do realTempEnabled.
         backgroundHandler.post(this::bootstrapDebloat);
+        // Fora do bootstrapHomeCard: usa o Shizuku, e o card pode ter entrado pelo telnet.
+        backgroundHandler.post(this::restoreCountryCodeIfNeeded);
+        // A chegada do binder limpou a fila do backgroundHandler, watchdog incluso. Se o card
+        // e o SystemUI ja entraram pelo telnet, os bootstraps acima sao no-op e nao o rearmam.
+        if (fridaEarlyBoot) backgroundHandler.post(() -> rearmInjectionWatchdog(HOME_CARD_RETRY_MS));
 
         try {
             IPTablesUtils.unlockInputOutputAll();
@@ -1649,9 +1658,32 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // ─────────────────────────────
 
     /**
-     * Registra o callback da UI e aplica a pref persistida. Chamado assim que o
-     * Shizuku esta utilizavel, antes de connectToVehicleService(), para encurtar a
-     * janela em que a fileira de midia online do OEM aparece depois do boot.
+     * Card na Home e hook do SystemUI logo depois de subir o shizuku_server, pelo root do
+     * telnet (ver FridaUtils.rootShell). Medido em 2026-11-01: o binder chegava 3,7-4,9s
+     * depois do telnet, e o card e a guarda esperavam por ele sem precisar. O resto
+     * (veiculo, iptables, faixa) continua no binder. Roda no backgroundHandler.
+     */
+    private void earlyFridaBoot() {
+        try {
+            // As prefs do card e da temperatura real ficam no armazenamento cifrado.
+            UserManager um = getSystemService(UserManager.class);
+            if (um != null && !um.isUserUnlocked()) {
+                PersistentLog.w(TAG, "[boot] usuario ainda bloqueado — Frida espera o binder do Shizuku");
+                return;
+            }
+            fridaEarlyBoot = true;
+            bootstrapHomeCard();
+            bootstrapSystemUi();
+        } catch (Exception e) {
+            // Nunca deixar cair no catch do bootstrap: ele rodaria o libshizuku.so de novo.
+            PersistentLog.e(TAG, "[boot] injecao antecipada falhou: " + e);
+        }
+    }
+
+    /**
+     * Registra o callback da UI e aplica a pref persistida. Chamado logo depois do
+     * telnet subir o shizuku_server (earlyFridaBoot) ou, no mais tardar, quando o binder
+     * chega — para encurtar a janela em que a fileira de midia online do OEM aparece.
      * Idempotente: checkAndInitialize() pode rodar mais de uma vez.
      */
     private void bootstrapHomeCard() {
@@ -1660,9 +1692,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
         ClimateStateHolder.INSTANCE.setOnHomeCardToggle(enabled ->
                 backgroundHandler.post(() -> applyHomeCard(enabled)));
-
-        // Desfaz, uma vez, o country code que a 1.25.0 possa ter deixado gravado.
-        restoreCountryCodeIfNeeded();
 
         boolean wanted = false;
         try {

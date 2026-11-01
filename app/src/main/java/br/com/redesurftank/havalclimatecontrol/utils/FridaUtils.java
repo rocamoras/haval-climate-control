@@ -13,7 +13,8 @@ import br.com.redesurftank.havalclimatecontrol.R;
 import rikka.shizuku.Shizuku;
 
 /**
- * Injeção de scripts Frida em processos do sistema, via Shizuku.
+ * Injeção de scripts Frida em processos do sistema, via Shizuku — ou, no boot, antes de o
+ * binder dele chegar, pelo root do telnet (ver {@link #rootShell}).
  *
  * Dois alvos hoje:
  *   - {@link #TARGET_SYSTEM_UI}: guarda do popup do HVAC do OEM e, se ligada, a
@@ -236,6 +237,20 @@ public class FridaUtils {
     // Mecânica comum
     // ─────────────────────────────────────────────────────────────
 
+    // So valem pelo telnet; pelo Shizuku o shell roda ate o fim.
+    private static final long INJECT_TIMEOUT_MS  = 5_000;
+    private static final long EXTRACT_TIMEOUT_MS = 30_000;
+
+    /**
+     * Shell root para a injecao: pelo Shizuku quando o binder ja esta de pe, senao pelo
+     * telnet. O Frida so precisa de root, e no boot o telnet ja o da uns 4-5s antes de o
+     * shizuku_server entregar o binder — que era exatamente a espera do card e da guarda.
+     */
+    private static ShizukuUtils.ShellResult rootShell(String script, long telnetTimeoutMs) {
+        if (ShizukuUtils.isAvailable()) return ShizukuUtils.run(new String[]{"sh", "-c", script});
+        return TelnetShell.run(script, telnetTimeoutMs);
+    }
+
     /** Resultado de uma injeção. */
     public static final class InjectResult {
         /** pid do alvo em que o injetor foi lançado; "" se não houve injeção. */
@@ -265,14 +280,13 @@ public class FridaUtils {
      * carimbo de versão não bate: na prática, uma vez por instalação.
      */
     public static InjectResult inject(Target t, boolean ctrlOn) {
-        if (!Shizuku.pingBinder()) return InjectResult.fail("Shizuku indisponível");
         if (!fridaToolsEmbedded())
             return InjectResult.fail("Binário do Frida ausente neste APK (placeholder). Use o APK do Release/CI.");
 
-        ShizukuUtils.ShellResult r = ShizukuUtils.run(new String[]{"sh", "-c", injectScript(t, ctrlOn)});
+        ShizukuUtils.ShellResult r = rootShell(injectScript(t, ctrlOn), INJECT_TIMEOUT_MS);
         if (r.exitCode == 3) {
             if (!extractAll()) return InjectResult.fail("Falha ao extrair o Frida para /data/local/tmp");
-            r = ShizukuUtils.run(new String[]{"sh", "-c", injectScript(t, ctrlOn)});
+            r = rootShell(injectScript(t, ctrlOn), INJECT_TIMEOUT_MS);
         }
 
         String pid = "";
@@ -363,7 +377,7 @@ public class FridaUtils {
             }
             cmd.append("chmod 755 ").append(FRIDA_INJECTOR_PATH).append("; ")
                .append("echo '").append(stamp()).append("' > ").append(STAMP_PATH);
-            ShizukuUtils.ShellResult r = ShizukuUtils.run(new String[]{"sh", "-c", cmd.toString()});
+            ShizukuUtils.ShellResult r = rootShell(cmd.toString(), EXTRACT_TIMEOUT_MS);
             if (!r.ok()) {
                 PersistentLog.e(TAG, "[frida] extracao falhou: " + r.describeFailure());
                 return false;
