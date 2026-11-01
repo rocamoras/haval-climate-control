@@ -202,6 +202,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // Depois de subir o servidor via telnet o restart TEM valor (refaz o bootstrap),
     // então aqui a espera fica curta de proposito — mas nao tao curta quanto 5s.
     private static final long   SHIZUKU_BOOTSTRAP_TIMEOUT_MS = 15_000;
+    // Ritmo com que o earlyFridaBoot reolha o desbloqueio do usuario no boot.
+    private static final long   EARLY_FRIDA_UNLOCK_POLL_MS   = 100;
 
     private static Method getServiceMethod;
 
@@ -303,6 +305,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private volatile boolean homeCardInjected     = false;
     /** Card e SystemUI entraram pelo telnet, antes do binder do Shizuku (earlyFridaBoot). */
     private volatile boolean fridaEarlyBoot       = false;
+    /** elapsedRealtime em que o earlyFridaBoot achou o usuario bloqueado; 0 se nao achou. */
+    private long    earlyFridaLockedSinceMs     = 0;
+    private final Runnable earlyFridaRetry      = this::earlyFridaBoot;
     private String  injectedMediaCenterPid      = "";
     /** pid onde a injecao do card ja falhou por falta das classes; "" se nenhum. */
     private String  homeCardWrongPid            = "";
@@ -1665,11 +1670,23 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
      */
     private void earlyFridaBoot() {
         try {
-            // As prefs do card e da temperatura real ficam no armazenamento cifrado.
+            if (isShizukuInitialized) return;
+            // As prefs do card e da temperatura real ficam no armazenamento cifrado. No boot
+            // de 2026-11-01 19:17 o servico subiu em 10s de uptime ainda bloqueado: em vez de
+            // desistir, reolha ate o desbloqueio. A chegada do binder limpa a fila do
+            // backgroundHandler, e com ela esta espera — dali em diante e o caminho normal.
             UserManager um = getSystemService(UserManager.class);
             if (um != null && !um.isUserUnlocked()) {
-                PersistentLog.w(TAG, "[boot] usuario ainda bloqueado — Frida espera o binder do Shizuku");
+                if (earlyFridaLockedSinceMs == 0) {
+                    earlyFridaLockedSinceMs = SystemClock.elapsedRealtime();
+                    PersistentLog.w(TAG, "[boot] usuario ainda bloqueado — Frida espera o desbloqueio");
+                }
+                backgroundHandler.postDelayed(earlyFridaRetry, EARLY_FRIDA_UNLOCK_POLL_MS);
                 return;
+            }
+            if (earlyFridaLockedSinceMs != 0) {
+                PersistentLog.w(TAG, "[boot] usuario desbloqueado apos "
+                        + (SystemClock.elapsedRealtime() - earlyFridaLockedSinceMs) + "ms");
             }
             fridaEarlyBoot = true;
             bootstrapHomeCard();
