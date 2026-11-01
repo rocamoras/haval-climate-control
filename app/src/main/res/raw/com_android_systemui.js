@@ -38,7 +38,20 @@
  */
 "use strict";
 
-function log(m) { console.log("[sysui] " + m); }
+// Uptime (CLOCK_BOOTTIME, o mesmo do elapsedRealtime) em cada linha: e o que casa com o
+// "uptime" do diag.log do app e diz quanto o script leva entre o attach e a tela.
+var clockGettime = null, tsBuf = null;
+try {
+    clockGettime = new NativeFunction(Module.getExportByName(null, "clock_gettime"), "int", ["int", "pointer"]);
+    tsBuf = Memory.alloc(16);
+} catch (e) {}
+function uptime() {
+    if (clockGettime === null) return "?";
+    clockGettime(7, tsBuf);
+    return (tsBuf.readS64().toNumber() + tsBuf.add(8).readS64().toNumber() / 1e9).toFixed(3);
+}
+
+function log(m) { console.log(uptime() + " [sysui] " + m); }
 
 Java.perform(function () {
     var Str = Java.use("java.lang.String");

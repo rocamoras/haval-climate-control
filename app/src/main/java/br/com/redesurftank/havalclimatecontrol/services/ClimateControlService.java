@@ -81,6 +81,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     // Prefs da UI (climate_ui_prefs) — lidos direto pelo serviço no boot, pois o
     // espelho em ClimateStateHolder só é populado quando a Activity é aberta.
     private static final String UI_PREFS_NAME         = "climate_ui_prefs";
+    // Copia device-protected das opcoes que o earlyFridaBoot le antes do desbloqueio.
+    private static final String UI_PREFS_BOOT_COPY_NAME = "climate_ui_prefs_boot";
     private static final String KEY_REAL_OUTSIDE_TEMP = "real_outside_temp_enabled";
     private static final String KEY_HOME_CARD         = "home_card_enabled";
     private static final String KEY_TURBO_ENABLED     = "turbo_enabled";
@@ -557,10 +559,19 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private synchronized void onShizukuBinderReceived() {
         if (!isServiceRunning) return;
         Shizuku.removeBinderReceivedListener(binderReceivedListener);
-        PersistentLog.w(TAG, "binder do Shizuku recebido apos " + waitedForBinderMs() + "ms");
+        PersistentLog.w(TAG, "binder do Shizuku recebido apos " + waitedForBinderMs() + "ms"
+                + " (uptime " + uptimeS() + ")");
         isShizukuInitialized = true;
         backgroundHandler.removeCallbacksAndMessages(null);
         checkAndInitialize();
+    }
+
+    /**
+     * Uptime com centesimos, para o diag.log: o relogio de parede ainda pula no boot, e o
+     * log dos scripts Frida carimba o mesmo relogio (CLOCK_BOOTTIME).
+     */
+    private static String uptimeS() {
+        return String.format(Locale.US, "%.2fs", SystemClock.elapsedRealtime() / 1000.0);
     }
 
     /** Quanto tempo esperamos pelo binder, em ms; -1 se a espera nem comecou. */
@@ -595,7 +606,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         backgroundHandler.post(this::restoreCountryCodeIfNeeded);
         // A chegada do binder limpou a fila do backgroundHandler, watchdog incluso. Se o card
         // e o SystemUI ja entraram pelo telnet, os bootstraps acima sao no-op e nao o rearmam.
-        if (fridaEarlyBoot) backgroundHandler.post(() -> rearmInjectionWatchdog(HOME_CARD_RETRY_MS));
+        if (fridaEarlyBoot) backgroundHandler.post(this::reconcileEarlyFridaBoot);
 
         try {
             IPTablesUtils.unlockInputOutputAll();
@@ -1602,18 +1613,13 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         if (systemUiBootstrapped) return;
         systemUiBootstrapped = true;
 
-        ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(enabled ->
-                backgroundHandler.post(() -> applyRealOutsideTemp(enabled)));
+        ClimateStateHolder.INSTANCE.setOnRealOutsideTempToggle(enabled -> {
+            saveUiPrefBootCopy(KEY_REAL_OUTSIDE_TEMP, enabled);
+            backgroundHandler.post(() -> applyRealOutsideTemp(enabled));
+        });
         // Lê direto do climate_ui_prefs porque, no boot do carro (antes da Activity
         // abrir), o espelho em ClimateStateHolder ainda é o default false.
-        boolean realTempWanted = false;
-        try {
-            realTempWanted = App.getContext()
-                    .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
-                    .getBoolean(KEY_REAL_OUTSIDE_TEMP, false);
-        } catch (Exception e) {
-            Log.w(TAG, "Falha lendo pref real_outside_temp: " + e.getMessage());
-        }
+        boolean realTempWanted = Boolean.TRUE.equals(readUiPref(KEY_REAL_OUTSIDE_TEMP));
         realTempEnabled = realTempWanted;
         if (realTempWanted) ClimateStateHolder.INSTANCE.setRealOutsideTempEnabled(true);
 
@@ -1634,7 +1640,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         injectedSystemUiPid = r.pid;
         guardConfirmTicks = 0;
         PersistentLog.w(TAG, "[sysui] " + why + ": " + r.message
-                + " (temp real=" + realTempEnabled + ")");
+                + " (temp real=" + realTempEnabled + ", uptime " + uptimeS() + ")");
         rearmInjectionWatchdog(Math.min(GUARD_CONFIRM_MS, watchdogIntervalMs));
     }
 
@@ -1675,11 +1681,13 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             // de 2026-11-01 19:17 o servico subiu em 10s de uptime ainda bloqueado: em vez de
             // desistir, reolha ate o desbloqueio. A chegada do binder limpa a fila do
             // backgroundHandler, e com ela esta espera — dali em diante e o caminho normal.
-            UserManager um = getSystemService(UserManager.class);
-            if (um != null && !um.isUserUnlocked()) {
+            // Desde a 1.34.2 a copia em readUiPref dispensa essa espera; ela so sobra no
+            // primeiro boot depois de atualizar, quando a copia ainda nao existe.
+            if (readUiPref(KEY_HOME_CARD) == null || readUiPref(KEY_REAL_OUTSIDE_TEMP) == null) {
                 if (earlyFridaLockedSinceMs == 0) {
                     earlyFridaLockedSinceMs = SystemClock.elapsedRealtime();
-                    PersistentLog.w(TAG, "[boot] usuario ainda bloqueado — Frida espera o desbloqueio");
+                    PersistentLog.w(TAG, "[boot] usuario ainda bloqueado e sem copia das opcoes"
+                            + " — Frida espera o desbloqueio");
                 }
                 backgroundHandler.postDelayed(earlyFridaRetry, EARLY_FRIDA_UNLOCK_POLL_MS);
                 return;
@@ -1689,12 +1697,74 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                         + (SystemClock.elapsedRealtime() - earlyFridaLockedSinceMs) + "ms");
             }
             fridaEarlyBoot = true;
+            // Em paralelo: pelo telnet cada injecao levava ~1s (boot de 2026-11-01 19:27), e
+            // o SystemUI esperava o card terminar a dele sem depender dele em nada. O join
+            // devolve o backgroundHandler so com os dois prontos.
+            Thread sysui = new Thread(this::bootstrapSystemUi, "early-sysui");
+            sysui.start();
             bootstrapHomeCard();
-            bootstrapSystemUi();
+            sysui.join();
         } catch (Exception e) {
             // Nunca deixar cair no catch do bootstrap: ele rodaria o libshizuku.so de novo.
             PersistentLog.e(TAG, "[boot] injecao antecipada falhou: " + e);
         }
+    }
+
+    /**
+     * Le uma opcao da tela (climate_ui_prefs, gravada pela MainActivity). Essas prefs moram
+     * no armazenamento cifrado, que no boot so abre depois de o servico subir (613ms no
+     * boot de 2026-11-01 19:27). Cada leitura com o usuario desbloqueado deixa uma copia no
+     * device-protected, que e o que o earlyFridaBoot le antes do desbloqueio.
+     *
+     * @return null se o usuario esta bloqueado e ainda nao ha copia
+     */
+    private Boolean readUiPref(String key) {
+        SharedPreferences copy = App.getDeviceProtectedContext()
+                .getSharedPreferences(UI_PREFS_BOOT_COPY_NAME, Context.MODE_PRIVATE);
+        UserManager um = getSystemService(UserManager.class);
+        if (um != null && !um.isUserUnlocked()) {
+            return copy.contains(key) ? copy.getBoolean(key, false) : null;
+        }
+        boolean value = false;
+        try {
+            value = App.getContext()
+                    .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
+                    .getBoolean(key, false);
+        } catch (Exception e) {
+            Log.w(TAG, "Falha lendo pref " + key + ": " + e.getMessage());
+        }
+        if (!copy.contains(key) || copy.getBoolean(key, false) != value) {
+            saveUiPrefBootCopy(key, value);
+        }
+        return value;
+    }
+
+    /** Atualiza a copia de readUiPref; chamado tambem a cada toggle na tela. */
+    private void saveUiPrefBootCopy(String key, boolean value) {
+        App.getDeviceProtectedContext()
+                .getSharedPreferences(UI_PREFS_BOOT_COPY_NAME, Context.MODE_PRIVATE)
+                .edit().putBoolean(key, value).apply();
+    }
+
+    /**
+     * Depois de uma injecao antecipada: a copia das opcoes pode estar velha (mudada com o
+     * servico fora do ar), entao confere contra o original e corrige. E rearma o watchdog,
+     * que a chegada do binder tirou da fila. Roda no backgroundHandler.
+     */
+    private void reconcileEarlyFridaBoot() {
+        Boolean card = readUiPref(KEY_HOME_CARD);
+        if (card != null && card != homeCardEnabled) {
+            PersistentLog.w(TAG, "[boot] copia da opcao do card estava velha — aplicando " + card);
+            ClimateStateHolder.INSTANCE.setHomeCardEnabled(card);
+            applyHomeCard(card);
+        }
+        Boolean realTemp = readUiPref(KEY_REAL_OUTSIDE_TEMP);
+        if (realTemp != null && realTemp != realTempEnabled) {
+            PersistentLog.w(TAG, "[boot] copia da opcao da temp real estava velha — aplicando " + realTemp);
+            ClimateStateHolder.INSTANCE.setRealOutsideTempEnabled(realTemp);
+            applyRealOutsideTemp(realTemp);
+        }
+        rearmInjectionWatchdog(HOME_CARD_RETRY_MS);
     }
 
     /**
@@ -1707,17 +1777,12 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         if (homeCardBootstrapped) return;
         homeCardBootstrapped = true;
 
-        ClimateStateHolder.INSTANCE.setOnHomeCardToggle(enabled ->
-                backgroundHandler.post(() -> applyHomeCard(enabled)));
+        ClimateStateHolder.INSTANCE.setOnHomeCardToggle(enabled -> {
+            saveUiPrefBootCopy(KEY_HOME_CARD, enabled);
+            backgroundHandler.post(() -> applyHomeCard(enabled));
+        });
 
-        boolean wanted = false;
-        try {
-            wanted = App.getContext()
-                    .getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE)
-                    .getBoolean(KEY_HOME_CARD, false);
-        } catch (Exception e) {
-            Log.w(TAG, "Falha lendo pref do card: " + e.getMessage());
-        }
+        boolean wanted = Boolean.TRUE.equals(readUiPref(KEY_HOME_CARD));
         if (wanted) {
             ClimateStateHolder.INSTANCE.setHomeCardEnabled(true);
             applyHomeCard(true);
@@ -1875,7 +1940,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             // separa "attach no boot" (alvo fragil) de "attach com a central estavel".
             PersistentLog.w(TAG, "[homecard] attach: " + msg + " (mediacenter pid="
                     + injectedMediaCenterPid + ", injetado=" + homeCardInjected
-                    + ", uptime " + (SystemClock.elapsedRealtime() / 1000) + "s)");
+                    + ", uptime " + uptimeS() + ")");
             if (!homeCardInjected) logMediaCenterInjectorTail("attach nao pegou");
         } else {
             // Grava "off" e só encerra o injetor depois que o script teve tempo de

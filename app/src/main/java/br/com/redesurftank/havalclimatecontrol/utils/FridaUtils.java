@@ -363,7 +363,8 @@ public class FridaUtils {
      * alvo roda falha com "Text file busy", e o rename troca o arquivo mesmo assim.
      */
     private static synchronized boolean extractAll() {
-        File cache = App.getContext().getCacheDir();
+        // Device-protected: no boot a extracao pode rodar pelo telnet antes do desbloqueio.
+        File cache = App.getDeviceProtectedContext().getCacheDir();
         int[]    res   = { R.raw.fridainject, TARGET_SYSTEM_UI.scriptRes, TARGET_MEDIA_CENTER.scriptRes };
         String[] dests = { FRIDA_INJECTOR_PATH, TARGET_SYSTEM_UI.scriptPath(), TARGET_MEDIA_CENTER.scriptPath() };
         File[]   tmps  = new File[res.length];
