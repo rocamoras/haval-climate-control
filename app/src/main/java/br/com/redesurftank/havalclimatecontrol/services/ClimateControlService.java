@@ -520,7 +520,6 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             }
 
                             String result = telnetClient.executeCommand(filePath);
-                            startNativeIptablesWatchdog(telnetClient);
                             telnetClient.disconnect();
                             if (Pattern.compile("killed \\d+ \\(shizuku_server\\)").matcher(result).find()) {
                                 // O starter matou um shizuku_server antigo. Acontece a cada
@@ -553,6 +552,10 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             // depender do listener. onShizukuBinderReceived ignora a repeticao.
                             if (ShizukuUtils.isAvailable()) backgroundHandler.post(binderReceivedListener::onBinderReceived);
                             earlyFridaBoot();
+                            // Depois das injecoes, na espera de ~4s pelo binder: no boot de
+                            // 2026-11-04 18:28 este passo, feito antes delas, somou 0,9s ao
+                            // bootstrap e atrasou o card na Home.
+                            backgroundHandler.post(ClimateControlService.this::startNativeIptablesWatchdog);
                         } catch (Exception e) {
                             // 1s fixo na janela do boot (ver BOOTSTRAP_FAST_WINDOW_MS); depois,
                             // backoff exponencial (1s→2s→…→30s) para não martelar o Telnet em
@@ -612,16 +615,27 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     }
 
     /**
-     * Sobe, pela sessao de telnet do bootstrap (root), um loop que reafirma as regras do
+     * Sobe, por uma sessao de telnet propria (root), um loop que reafirma as regras do
      * iptables a cada {@link #IPTABLES_WATCHDOG_S}s. Mesma ideia do app-tool: as regras
      * ficam prontas antes do binder chegar e nao custam newProcess no shizuku_server.
-     * Falhar aqui nao derruba o bootstrap — sobra a conferencia pelo Shizuku.
+     * Falhar aqui nao derruba nada — sobra a conferencia pelo Shizuku.
+     *
+     * Roda no backgroundHandler depois do earlyFridaBoot, fora do caminho do card. Se o
+     * binder chegar antes deste passo, checkAndInitialize so faz a conferencia antiga uma
+     * vez a mais.
      *
      * Uma linha so (cada executeCommand e uma ida e volta ao telnet). O pkill dentro dela e
      * seguro: o shell do telnet le os comandos pela entrada, a cmdline dele nao traz o
      * caminho do script.
      */
-    private void startNativeIptablesWatchdog(TelnetClientWrapper telnet) {
+    private void startNativeIptablesWatchdog() {
+        TelnetClientWrapper telnet = new TelnetClientWrapper();
+        try {
+            telnet.connect("127.0.0.1", 23);
+        } catch (Exception e) {
+            PersistentLog.e(TAG, "[iptables] telnet indisponivel para o loop nativo: " + e);
+            return;
+        }
         String sh = IPTABLES_WATCHDOG_SH;
         String cmd = "printf '#!/system/bin/sh\\nwhile true; do\\n"
                 + "  iptables -C OUTPUT -j ACCEPT 2>/dev/null || iptables -I OUTPUT 1 -j ACCEPT\\n"
@@ -636,10 +650,12 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             String out = telnet.executeCommand(cmd);
             nativeIptablesWatchdog = out.contains("IPT_2");
             PersistentLog.w(TAG, "[iptables] loop nativo " + (nativeIptablesWatchdog
-                    ? "lancado (" + sh + ")" : "nao confirmou: " + out));
+                    ? "lancado (" + sh + ", uptime " + uptimeS() + ")" : "nao confirmou: " + out));
         } catch (Exception e) {
             nativeIptablesWatchdog = false;
             PersistentLog.e(TAG, "[iptables] falha lancando o loop nativo: " + e);
+        } finally {
+            try { telnet.disconnect(); } catch (Exception ignored) {}
         }
     }
 
