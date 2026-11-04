@@ -192,7 +192,21 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final int    GUARD_CONFIRM_TICKS  = 5;
     private static final long   EVAL_DEBOUNCE_MS     = 50;     // coalesce bursts de onDataChanged numa única avaliação
     private static final long   IPTABLES_REFRESH_MS  = 60_000; // re-assert da regra iptables (idempotente, antes 15s)
+    // Com o loop nativo de pe (subido pelo telnet no bootstrap) a conferencia pelo Shizuku
+    // vira so rede de seguranca: cada uma custa 2 newProcess no shizuku_server.
+    private static final long   IPTABLES_SAFETY_MS   = 10 * 60_000;
+    // Loop root que reafirma as regras do iptables. Nome proprio: o app-tool (Impulse) usa
+    // /data/local/tmp/iptables_watchdog.sh, e o pkill de um nao pode derrubar o do outro.
+    private static final String IPTABLES_WATCHDOG_SH = "/data/local/tmp/haval_climate_iptables.sh";
+    private static final int    IPTABLES_WATCHDOG_S  = 10;
     private static final long   BOOTSTRAP_BACKOFF_MAX_MS = 30_000;
+    // No boot o processo nasce antes do telnetd da central aceitar conexao. O backoff
+    // exponencial puro (1, 2, 4, 8, 16s...) fazia a gente perder ate metade do intervalo
+    // depois que o telnet ja estava de pe — o app-tool, que tenta de 1 em 1s, subia o
+    // Shizuku segundos antes. Nesta janela desde a primeira falha o retry e fixo em 1s;
+    // so depois dela (telnet quebrado de vez) o backoff volta a crescer.
+    private static final long   BOOTSTRAP_FAST_RETRY_MS  = 1_000;
+    private static final long   BOOTSTRAP_FAST_WINDOW_MS = 30_000;
     // Teto e passo da espera pelo binder depois que o starter mata um shizuku_server orfao.
     private static final long   OLD_SERVER_KILLED_WAIT_MS = 5_000;
     private static final long   OLD_SERVER_KILLED_POLL_MS = 100;
@@ -236,6 +250,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private boolean isServiceRunning     = false;
     /** elapsedRealtime de quando comecamos a esperar o binder — vira metrica no log. */
     private volatile long binderWaitStartedMs = 0;
+    /** O loop nativo do iptables foi (re)lancado pelo telnet neste bootstrap. */
+    private volatile boolean nativeIptablesWatchdog = false;
 
     // Listeners guardados em campos: `this::metodo` cria uma instancia de lambda NOVA
     // a cada avaliacao, entao removeXListener(this::metodo) nunca removia o que havia
@@ -464,6 +480,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 backgroundHandler.postDelayed(timeoutRunnable, SHIZUKU_BINDER_TIMEOUT_MS);
             } else {
                 final int[] bootstrapAttempt = {0};
+                final long[] firstFailMs = {0};
+                final int[]  slowAttempt = {0};
                 backgroundHandler.post(new Runnable() {
                     @Override
                     public void run() {
@@ -502,6 +520,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             }
 
                             String result = telnetClient.executeCommand(filePath);
+                            startNativeIptablesWatchdog(telnetClient);
                             telnetClient.disconnect();
                             if (Pattern.compile("killed \\d+ \\(shizuku_server\\)").matcher(result).find()) {
                                 // O starter matou um shizuku_server antigo. Acontece a cada
@@ -522,24 +541,40 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                             }
 
                             PersistentLog.w(TAG, "bootstrap do Shizuku concluido na tentativa "
-                                    + (bootstrapAttempt[0] + 1) + " — esperando o binder");
+                                    + (bootstrapAttempt[0] + 1) + " — esperando o binder"
+                                    + " (uptime " + uptimeS() + ")");
                             bootstrapAttempt[0] = 0;
+                            firstFailMs[0] = 0;
+                            slowAttempt[0] = 0;
                             binderWaitStartedMs = SystemClock.elapsedRealtime();
                             Shizuku.addBinderReceivedListenerSticky(binderReceivedListener);
                             backgroundHandler.postDelayed(timeoutRunnable, SHIZUKU_BOOTSTRAP_TIMEOUT_MS);
+                            // Mesma conferencia do app-tool: se o binder ja chegou, segue sem
+                            // depender do listener. onShizukuBinderReceived ignora a repeticao.
+                            if (ShizukuUtils.isAvailable()) backgroundHandler.post(binderReceivedListener::onBinderReceived);
                             earlyFridaBoot();
                         } catch (Exception e) {
-                            // Backoff exponencial (1s→2s→…→30s) para não martelar o Telnet em falha persistente.
+                            // 1s fixo na janela do boot (ver BOOTSTRAP_FAST_WINDOW_MS); depois,
+                            // backoff exponencial (1s→2s→…→30s) para não martelar o Telnet em
+                            // falha persistente.
                             int  attempt = ++bootstrapAttempt[0];
-                            long backoff = Math.min(BOOTSTRAP_BACKOFF_MAX_MS,
-                                    1000L << Math.min(attempt - 1, 5));
+                            long now = SystemClock.elapsedRealtime();
+                            if (firstFailMs[0] == 0) firstFailMs[0] = now;
+                            long backoff;
+                            if (now - firstFailMs[0] < BOOTSTRAP_FAST_WINDOW_MS) {
+                                backoff = BOOTSTRAP_FAST_RETRY_MS;
+                            } else {
+                                int slow = ++slowAttempt[0];
+                                backoff = Math.min(BOOTSTRAP_BACKOFF_MAX_MS, 1000L << Math.min(slow, 5));
+                            }
                             // No log persistente, e não só no logcat: sem isso um bootstrap
                             // que falha em loop fica INVISÍVEL exatamente no log que deveria
                             // explicá-lo — o timeoutRunnable só é agendado depois do sucesso,
                             // então nem a linha de REINICIO aparece. Foi o que aconteceu no
                             // log de 2026-08-24: 12 minutos de silêncio absoluto.
                             PersistentLog.e(TAG, "bootstrap do Shizuku falhou na tentativa "
-                                    + attempt + " (retry em " + backoff + "ms): " + e);
+                                    + attempt + " (retry em " + backoff + "ms, uptime " + uptimeS()
+                                    + "): " + e);
                             backgroundHandler.postDelayed(this, backoff);
                         }
                     }
@@ -558,6 +593,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     private synchronized void onShizukuBinderReceived() {
         if (!isServiceRunning) return;
+        // Pode chegar duas vezes: pelo listener e pela conferencia direta do bootstrap.
+        if (isShizukuInitialized) return;
         Shizuku.removeBinderReceivedListener(binderReceivedListener);
         PersistentLog.w(TAG, "binder do Shizuku recebido apos " + waitedForBinderMs() + "ms"
                 + " (uptime " + uptimeS() + ")");
@@ -572,6 +609,38 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
      */
     private static String uptimeS() {
         return String.format(Locale.US, "%.2fs", SystemClock.elapsedRealtime() / 1000.0);
+    }
+
+    /**
+     * Sobe, pela sessao de telnet do bootstrap (root), um loop que reafirma as regras do
+     * iptables a cada {@link #IPTABLES_WATCHDOG_S}s. Mesma ideia do app-tool: as regras
+     * ficam prontas antes do binder chegar e nao custam newProcess no shizuku_server.
+     * Falhar aqui nao derruba o bootstrap — sobra a conferencia pelo Shizuku.
+     *
+     * Uma linha so (cada executeCommand e uma ida e volta ao telnet). O pkill dentro dela e
+     * seguro: o shell do telnet le os comandos pela entrada, a cmdline dele nao traz o
+     * caminho do script.
+     */
+    private void startNativeIptablesWatchdog(TelnetClientWrapper telnet) {
+        String sh = IPTABLES_WATCHDOG_SH;
+        String cmd = "printf '#!/system/bin/sh\\nwhile true; do\\n"
+                + "  iptables -C OUTPUT -j ACCEPT 2>/dev/null || iptables -I OUTPUT 1 -j ACCEPT\\n"
+                + "  iptables -C INPUT -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -j ACCEPT\\n"
+                + "  sleep " + IPTABLES_WATCHDOG_S + "\\ndone\\n' > " + sh
+                + " && chmod 755 " + sh
+                + " && { pkill -f " + sh + "; nohup " + sh + " >/dev/null 2>&1 & }"
+                // A marca sai calculada: o eco do comando no telnet (que a tela de 80 colunas
+                // pode quebrar e o wrapper entao nao remove) nunca traz "IPT_2" literal.
+                + " && echo IPT_$((1+1))";
+        try {
+            String out = telnet.executeCommand(cmd);
+            nativeIptablesWatchdog = out.contains("IPT_2");
+            PersistentLog.w(TAG, "[iptables] loop nativo " + (nativeIptablesWatchdog
+                    ? "lancado (" + sh + ")" : "nao confirmou: " + out));
+        } catch (Exception e) {
+            nativeIptablesWatchdog = false;
+            PersistentLog.e(TAG, "[iptables] falha lancando o loop nativo: " + e);
+        }
     }
 
     /** Quanto tempo esperamos pelo binder, em ms; -1 se a espera nem comecou. */
@@ -608,23 +677,31 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         // e o SystemUI ja entraram pelo telnet, os bootstraps acima sao no-op e nao o rearmam.
         if (fridaEarlyBoot) backgroundHandler.post(this::reconcileEarlyFridaBoot);
 
-        try {
-            IPTablesUtils.unlockInputOutputAll();
-        } catch (Exception e) {
-            Log.e(TAG, "Error unlocking iptables: " + e.getMessage(), e);
+        // Com o loop nativo de pe as regras ja estao la desde o bootstrap: nada de bloquear a
+        // conexao ao veiculo com 2 a 4 newProcess, e a conferencia pelo Shizuku so roda de
+        // vez em quando, caso o loop tenha morrido. Sem ele (binder de terceiro, sem telnet)
+        // fica o caminho antigo.
+        final boolean nativeIpt = nativeIptablesWatchdog;
+        if (!nativeIpt) {
+            try {
+                IPTablesUtils.unlockInputOutputAll();
+            } catch (Exception e) {
+                Log.e(TAG, "Error unlocking iptables: " + e.getMessage(), e);
+            }
         }
 
-        backgroundHandler.post(new Runnable() {
+        final long iptRefreshMs = nativeIpt ? IPTABLES_SAFETY_MS : IPTABLES_REFRESH_MS;
+        backgroundHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
                 try {
                     IPTablesUtils.unlockInputOutputAll();
-                    backgroundHandler.postDelayed(this, IPTABLES_REFRESH_MS);
+                    backgroundHandler.postDelayed(this, iptRefreshMs);
                 } catch (Exception e) {
                     backgroundHandler.postDelayed(this, 5000);
                 }
             }
-        });
+        }, nativeIpt ? iptRefreshMs : 0);
 
         if (!connectToVehicleService()) {
             restart("falha conectando ao servico do veiculo");

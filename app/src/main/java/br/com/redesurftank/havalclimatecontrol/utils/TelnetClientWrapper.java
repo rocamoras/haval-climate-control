@@ -60,9 +60,12 @@ public class TelnetClientWrapper {
                 }
             }
 
+            // endsWith e nao equals (mesma correcao do app-tool em 22/05): saida sem quebra de
+            // linha no fim deixa o prompt colado na ultima linha ("saida:/ #"), e com equals o
+            // comando so terminava no timeout de 5s — que derrubava a tentativa de bootstrap.
             String potentialLast = buffer.toString().trim();
-            boolean promptInBuffer = potentialLast.equals(prompt);
-            boolean promptFoundLocal = promptInBuffer || (!lines.isEmpty() && lines.get(lines.size() - 1).equals(prompt));
+            boolean promptInBuffer = potentialLast.endsWith(prompt);
+            boolean promptFoundLocal = promptInBuffer || (!lines.isEmpty() && lines.get(lines.size() - 1).endsWith(prompt));
 
             if (promptFoundLocal) {
                 int startIndex = 0;
@@ -75,7 +78,7 @@ public class TelnetClientWrapper {
                 int endIndex = promptInBuffer ? lines.size() : lines.size() - 1;
                 for (int i = startIndex; i < endIndex; i++) {
                     String line = lines.get(i);
-                    if (line.isEmpty() || line.equals(prompt)) continue;
+                    if (line.isEmpty() || line.endsWith(prompt)) continue;
                     clean.append(line).append("\n");
                 }
                 Log.w(TAG, "Prompt found. Lines: " + String.join(", ", lines));
