@@ -132,12 +132,29 @@ class MainActivity : ComponentActivity() {
     // ali dentro só devolveria o roubo de foco no meio da interação.
     override fun onStart() {
         super.onStart()
+        launchedExternal = false
         ClimateStateHolder.setUiVisible(true)
     }
 
     override fun onStop() {
         super.onStop()
         ClimateStateHolder.setUiVisible(false)
+        // Saiu da tela: encerra a Activity e a task, como os apps do OEM — nada fica para
+        // tras no sistema. O servico segue no processo, entao reabrir e rapido. Exceto
+        // quando fomos nos que abrimos outra tela por cima (instalador do update, ajuste de
+        // fontes desconhecidas): ai o usuario precisa voltar para ca.
+        if (!isChangingConfigurations && !isFinishing && !launchedExternal) finishAndRemoveTask()
+    }
+
+    /** true depois de abrirmos outra Activity por cima; ver onStop. */
+    private var launchedExternal = false
+
+    // startActivity() e o ActivityResult API passam todos por aqui.
+    @Deprecated("Ver ActivityResult API")
+    override fun startActivityForResult(intent: Intent, requestCode: Int, options: Bundle?) {
+        launchedExternal = true
+        @Suppress("DEPRECATION")
+        super.startActivityForResult(intent, requestCode, options)
     }
 }
 

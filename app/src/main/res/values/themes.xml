@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.HavalClimateControl" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Sem janela de abertura: o Android nao desenha nada ao tocar no icone, a tela anterior
+         fica ate o primeiro frame do Compose, e a nossa tela aparece ja pronta. Com o tema
+         Light essa janela saia BRANCA e ofuscava no carro.
+         O fundo preto fica so de reserva, para o caso de algum frame sair antes do conteudo. -->
+    <style name="Theme.HavalClimateControl" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:colorBackground">@android:color/black</item>
+    </style>
 </resources>
