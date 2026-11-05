@@ -1,5 +1,6 @@
 package br.com.redesurftank.havalclimatecontrol
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -143,7 +144,10 @@ class MainActivity : ComponentActivity() {
         // tras no sistema. O servico segue no processo, entao reabrir e rapido. Exceto
         // quando fomos nos que abrimos outra tela por cima (instalador do update, ajuste de
         // fontes desconhecidas): ai o usuario precisa voltar para ca.
-        if (!isChangingConfigurations && !isFinishing && !launchedExternal) finishAndRemoveTask()
+        // Inclusive com isFinishing: o voltar so faz finish(), que tira a Activity mas deixa
+        // a TASK — e a lista de apps abertos do launcher do OEM (ConditionHelperKt.getAppList)
+        // le getRecentTasks(20, RECENT_WITH_EXCLUDED), entao nem o excludeFromRecents a esconde.
+        if (!isChangingConfigurations && !launchedExternal) finishAndRemoveTask()
     }
 
     /** true depois de abrirmos outra Activity por cima; ver onStop. */
@@ -167,11 +171,13 @@ fun AppRoot() {
     var currentScreen by remember { mutableStateOf("main") }
     when (currentScreen) {
         "main"       -> MainControlScreen(
-                            onNavigateToScreenInfo = { currentScreen = "screeninfo" },
                             onNavigateToSettings   = { currentScreen = "settings" }
                         )
-        "screeninfo" -> ScreenInfoScreen(onNavigateBack = { currentScreen = "main" })
-        "settings"   -> SettingsScreen(onNavigateBack = { currentScreen = "main" })
+        "screeninfo" -> ScreenInfoScreen(onNavigateBack = { currentScreen = "settings" })
+        "settings"   -> SettingsScreen(
+                            onNavigateBack         = { currentScreen = "main" },
+                            onNavigateToScreenInfo = { currentScreen = "screeninfo" },
+                        )
     }
 }
 
@@ -181,7 +187,6 @@ fun AppRoot() {
 
 @Composable
 fun MainControlScreen(
-    onNavigateToScreenInfo: () -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
     val context = LocalContext.current
@@ -307,7 +312,7 @@ fun MainControlScreen(
 
     OemClimateScreen(
         onNavigateToSettings   = onNavigateToSettings,
-        onNavigateToScreenInfo = onNavigateToScreenInfo,
+        onClose                = { (context as? Activity)?.finishAndRemoveTask() },
         onToggleAutoControl    = { enabled ->
             autoControlEnabled       = enabled
             state.autoControlEnabled = enabled
@@ -459,7 +464,7 @@ fun ScreenInfoScreen(onNavigateBack: () -> Unit) {
 // ─────────────────────────────────────────────────────────────
 
 @Composable
-fun SettingsScreen(onNavigateBack: () -> Unit) {
+fun SettingsScreen(onNavigateBack: () -> Unit, onNavigateToScreenInfo: () -> Unit) {
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
     val state   = ClimateStateHolder
@@ -799,6 +804,7 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 OemButton(if (isUploading) "Enviando…" else "Enviar log", enabled = !isUploading) {
                     uploadLog()
                 }
+                OemButton("Informações da tela") { onNavigateToScreenInfo() }
             }
 
             UpdateRow()

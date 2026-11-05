@@ -136,7 +136,7 @@ internal fun intOf(raw: String, fallback: Int) =
 @Composable
 fun OemClimateScreen(
     onNavigateToSettings: () -> Unit,
-    onNavigateToScreenInfo: () -> Unit,
+    onClose: () -> Unit,
     onToggleAutoControl: (Boolean) -> Unit,
     onSeatVentAuto: (Boolean) -> Unit,
     rightHandDrive: Boolean = false,
@@ -187,11 +187,13 @@ fun OemClimateScreen(
             Plate(R.drawable.bg_toolbar_pop, 0, 516, 1732, 112)
 
             // ── sair ──────────────────────────────────────────────────────────
+            // Fecha o app, como o X do OEM. Antes abria as informações da tela (debug), que
+            // agora ficam em Configurações > Diagnóstico.
             OemIcon(
                 resId = R.drawable.btn_exit, on = false,
-                contentDescription = "Informações da tela",
+                contentDescription = "Fechar",
                 modifier = Modifier.absoluteOffset(22.dp, 20.dp),
-                onClick = onNavigateToScreenInfo,
+                onClick = onClose,
             )
 
             // ── fileira de cima ───────────────────────────────────────────────
