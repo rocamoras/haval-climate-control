@@ -114,9 +114,9 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private static final String KEY_WELCOME_PREV_AUTO = "welcome_prev_auto";
     private static final String KEY_WELCOME_PREV_FAN  = "welcome_prev_fan";
     private static final int    WELCOME_FAN           = 6;
-    // 8s e nao 5: o carro segura o 6 pelo tempo exato, mas o motor leva ~1,5s para
-    // subir e outro tanto para descer — com 5s o ar forte mal passava de 3s.
-    private static final long   WELCOME_MS            = 8_000;
+    // O carro segura o 6 pelo tempo exato, mas o motor leva ~1,5s para subir e outro
+    // tanto para descer: dos 20s, uns 17 sao de ar forte de verdade.
+    private static final long   WELCOME_MS            = 20_000;
     // Na partida o HVAC pode publicar power_mode depois da primeira leitura da cabine:
     // a boas vindas espera ele ligar por ate este tempo, e desiste depois.
     private static final long   WELCOME_WAIT_MS       = 15_000;
