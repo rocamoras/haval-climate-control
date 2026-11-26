@@ -49,6 +49,7 @@ import br.com.redesurftank.havalclimatecontrol.utils.DebloatUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.IPTablesUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.OverscanUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.PersistentLog;
+import br.com.redesurftank.havalclimatecontrol.homecard.HomeCardOverlay;
 import br.com.redesurftank.havalclimatecontrol.utils.FridaUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.ShizukuUtils;
 import br.com.redesurftank.havalclimatecontrol.utils.TelnetClientWrapper;
@@ -319,6 +320,11 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
 
     // Card na Home (MediaCenter) — injeção Frida
     private volatile boolean homeCardEnabled    = false;
+    /**
+     * Card desenhado por overlay (HomeCardOverlay), sem Frida na MediaCenter. Lido da pref
+     * device-protected no onCreate. Com ele ligado o watchdog nao injeta o card.
+     */
+    private volatile boolean homeCardOverlay    = true;
     private volatile boolean homeCardBootstrapped = false;
     private volatile boolean homeCardInjected     = false;
     /** Card e SystemUI entraram pelo telnet, antes do binder do Shizuku (earlyFridaBoot). */
@@ -405,6 +411,17 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 ContextCompat.RECEIVER_NOT_EXPORTED);
 
         PersistentLog.w(TAG, "servico criado");
+
+        // Card por overlay: sobe aqui, sem esperar telnet nem Shizuku. A janela e a
+        // deteccao da MediaCenter no topo dependem so de appops ja concedidos.
+        homeCardOverlay = HomeCardOverlay.isOverlayMode();
+        try {
+            if (homeCardOverlay && Boolean.TRUE.equals(readUiPref(KEY_HOME_CARD))) {
+                HomeCardOverlay.start(this);
+            }
+        } catch (Exception e) {
+            PersistentLog.e(TAG, "[homecard] overlay no onCreate falhou: " + e);
+        }
     }
 
     @Override
@@ -681,6 +698,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         // ate o hook entrar, e connectToVehicleService() + iptables adicionam segundos
         // a essa janela. O card so depende do Shizuku e da pref, nao do veiculo.
         backgroundHandler.post(this::bootstrapHomeCard);
+        // Overlay do card: concede os appops que faltam e calibra se preciso.
+        backgroundHandler.post(HomeCardOverlay::onShizukuReady);
         // A guarda do HVAC tambem: quanto antes armar, menos escritas passam pelo `pm`.
         backgroundHandler.post(this::bootstrapSystemUi);
         // Mesma logica: a faixa (ou a limpeza do overscan que sobrou) so depende do Shizuku.
@@ -1874,6 +1893,8 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
             saveUiPrefBootCopy(KEY_HOME_CARD, enabled);
             backgroundHandler.post(() -> applyHomeCard(enabled));
         });
+        ClimateStateHolder.INSTANCE.setOnHomeCardModeChange(overlay ->
+                backgroundHandler.post(() -> switchHomeCardMode(overlay)));
 
         boolean wanted = Boolean.TRUE.equals(readUiPref(KEY_HOME_CARD));
         if (wanted) {
@@ -2013,6 +2034,13 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
      *  Roda no backgroundHandler. */
     private void applyHomeCard(boolean enabled) {
         homeCardEnabled = enabled;
+        if (homeCardOverlay) {
+            if (enabled) HomeCardOverlay.start(this); else HomeCardOverlay.stop();
+            PersistentLog.w(TAG, "[homecard] overlay " + (enabled ? "ligado" : "desligado")
+                    + " (uptime " + uptimeS() + ")");
+            rearmInjectionWatchdog(WATCHDOG_MIN_MS);
+            return;
+        }
         if (enabled) {
             // Portao anti-reinicio: se o processo da MediaCenter ainda e muito novo, nao
             // ataca agora — o watchdog reintenta no ritmo rapido ate ele amadurecer.
@@ -2050,6 +2078,40 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
         // de esperar o ciclo normal: cada segundo aqui e um segundo de fileira do OEM.
         rearmInjectionWatchdog(homeCardEnabled && !homeCardInjected
                 ? HOME_CARD_RETRY_MS : WATCHDOG_MIN_MS);
+    }
+
+    /** Card no Frida enquanto o desenho e pelo Frida e o card esta ligado. */
+    private boolean homeCardViaFrida() {
+        return homeCardEnabled && !homeCardOverlay;
+    }
+
+    /**
+     * Troca o desenho do card entre overlay e Frida (tela de configuracoes). Com o card
+     * ligado: indo para o overlay, o script recebe "off" e restaura a fileira do OEM antes
+     * de o injetor sair; indo para o Frida, a janela some e o attach segue o caminho
+     * normal. Roda no backgroundHandler.
+     */
+    private void switchHomeCardMode(boolean overlay) {
+        if (overlay == homeCardOverlay) return;
+        PersistentLog.w(TAG, "[homecard] desenho -> " + (overlay ? "overlay" : "frida"));
+        if (!homeCardEnabled) {
+            homeCardOverlay = overlay;
+            return;
+        }
+        if (overlay) {
+            FridaUtils.stopHomeCard();
+            injectedMediaCenterPid = "";
+            homeCardInjected       = false;
+            homeCardOverlay        = true;
+            backgroundHandler.postDelayed(() -> {
+                if (homeCardOverlay) FridaUtils.stopHomeCardInjection();
+            }, HOME_CARD_RESTORE_MS);
+            HomeCardOverlay.start(this);
+        } else {
+            HomeCardOverlay.stop();
+            homeCardOverlay = false;
+        }
+        applyHomeCard(true);
     }
 
     // -----------------------------
@@ -2135,7 +2197,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
     private void rearmInjectionWatchdog(long delayMs) {
         backgroundHandler.removeCallbacks(injectionWatchdogRunnable);
         watchdogIntervalMs = delayMs;
-        if (!systemUiWanted && !homeCardEnabled) return;
+        if (!systemUiWanted && !homeCardViaFrida()) return;
         backgroundHandler.postDelayed(injectionWatchdogRunnable, delayMs);
     }
 
@@ -2151,13 +2213,13 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
      * cada tick de 1s fazia uma injecao inteira so para descobrir que nao havia pid.
      */
     private void injectionWatchdogTick() {
-        if (!systemUiWanted && !homeCardEnabled) return;
+        if (!systemUiWanted && !homeCardViaFrida()) return;
 
         long next = watchdogIntervalMs;
         try {
             List<FridaUtils.Target> want = new ArrayList<>(2);
             if (systemUiWanted)  want.add(FridaUtils.TARGET_SYSTEM_UI);
-            if (homeCardEnabled) want.add(FridaUtils.TARGET_MEDIA_CENTER);
+            if (homeCardViaFrida()) want.add(FridaUtils.TARGET_MEDIA_CENTER);
             FridaUtils.Target[] targets = want.toArray(new FridaUtils.Target[0]);
 
             FridaUtils.TargetStatus[] status = FridaUtils.probe(targets);
@@ -2257,7 +2319,7 @@ public class ClimateControlService extends Service implements Shizuku.OnBinderDe
                 next = Math.min(next, GUARD_CONFIRM_MS);
             }
             // MediaCenter ainda nao subiu: volta ao ritmo rapido do boot.
-            if (homeCardEnabled && !homeCardInjected) next = HOME_CARD_RETRY_MS;
+            if (homeCardViaFrida() && !homeCardInjected) next = HOME_CARD_RETRY_MS;
 
         } catch (Exception e) {
             Log.e(TAG, "[watchdog] erro: " + e.getMessage(), e);

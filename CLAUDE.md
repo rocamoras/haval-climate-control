@@ -91,3 +91,25 @@ ciclo sai da fileira e fica só o de clima. Mudar o formato exige mudar junto o
 O selo **TURBO** do card de clima vem de `/data/local/tmp/haval_home_card_turbo`
 (`1`/`0`), escrito pelo serviço só nas transições do turbo — o turbo tira o AUTO, então
 sem ele o card mostraria MANUAL.
+
+### Desenho por overlay (sem Frida) — 1.35.0
+
+Opção "Desenho do card" na tela de configurações: **Overlay** (padrão a partir da 1.35.0) ou
+**Frida** (o script acima). No overlay, `homecard/HomeCardOverlay.kt` põe uma janela
+`TYPE_APPLICATION_OVERLAY` por cima do título "Música online" e da fileira, visível só com a
+`MediaCenterActivity` no topo. Nada é injetado na MediaCenter e o watchdog do Frida ignora o card
+(`homeCardViaFrida()`).
+
+- **Boot sem Shizuku**: o overlay sobe no `onCreate` do serviço. A janela usa o appop
+  `SYSTEM_ALERT_WINDOW` e o topo vem do `UsageStatsManager` (`homecard/UsageTopWatcher.kt`, appop
+  `GET_USAGE_STATS`). Os dois são concedidos uma vez em `onShizukuReady` e persistem. Medido no
+  haval-engine-reverse em 25/11/2026: assim o card aparece antes do card do Frida.
+- **Desenho**: `homecard/HomeCardViews.kt` é um port direto de `drawCard`/`drawEvCard`, com as mesmas
+  coordenadas e a mesma paleta. O fundo é **opaco**, porque embaixo estão o título e o ícone do OEM.
+- **Dados**: o clima vem do `ClimateStateHolder` (poll de 1 s), com o último retrato salvo em prefs
+  device-protected para o boot. O ciclo vem do mesmo `/data/local/tmp/haval_ev_home_card`: leitura
+  direta e, se negada, `cat` pelo Shizuku. As regras de idade são as mesmas (90 s).
+- **Posição**: `uiautomator dump` pelo Shizuku na 1ª vez que a mídia aparece no topo (sem abrir
+  nada), com os bounds de `online_music`, `horizontalScrollView` e `local_media`. Antes de calibrar
+  o card não aparece. Há um botão "Recalibrar" na tela.
+- **Limite**: diálogos da própria MediaCenter ficam por baixo do overlay.

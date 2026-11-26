@@ -52,6 +52,7 @@ import br.com.redesurftank.havalclimatecontrol.utils.DebloatUtils
 import br.com.redesurftank.havalclimatecontrol.utils.FridaUtils
 import br.com.redesurftank.havalclimatecontrol.utils.LogUploader
 import br.com.redesurftank.havalclimatecontrol.utils.SystemPropsUtils
+import br.com.redesurftank.havalclimatecontrol.homecard.HomeCardOverlay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -476,6 +477,10 @@ fun SettingsScreen(onNavigateBack: () -> Unit, onNavigateToScreenInfo: () -> Uni
     var homeCardEnabled by remember {
         mutableStateOf(prefs.getBoolean(KEY_HOME_CARD, false))
     }
+    var homeCardOverlay by remember { mutableStateOf(HomeCardOverlay.isOverlayMode()) }
+    val homeCardStatus by HomeCardOverlay.status.collectAsState()
+    var homeCardCalibMsg by remember { mutableStateOf("") }
+    var homeCardCalibrating by remember { mutableStateOf(false) }
     var turboEnabled by remember {
         mutableStateOf(prefs.getBoolean(KEY_TURBO_ENABLED, true))
     }
@@ -705,6 +710,38 @@ fun SettingsScreen(onNavigateBack: () -> Unit, onNavigateToScreenInfo: () -> Uni
                     state.onHomeCardToggle?.onToggle(enabled)
                 }
                 HelpDot { showCardHelp = true }
+            }
+
+            OemRow("Desenho do card") {
+                OemSeg(listOf("Frida", "Overlay"), if (homeCardOverlay) 1 else 0, 400.dp) { i ->
+                    val overlay = i == 1
+                    homeCardOverlay = overlay
+                    HomeCardOverlay.saveOverlayMode(overlay)
+                    state.onHomeCardModeChange?.onToggle(overlay)
+                }
+            }
+            Text(
+                if (homeCardOverlay)
+                    "Overlay: o card é uma janela deste app por cima da tela de mídia, sem injetar " +
+                        "nada na MediaCenter, e aparece no boot sem esperar o Shizuku. A posição é " +
+                        "medida sozinha na 1ª vez que a mídia abrir. Estado: $homeCardStatus"
+                else
+                    "Frida: o card é desenhado dentro do app de mídia (modo antigo).",
+                fontSize = 18.sp, color = OemInk3,
+                modifier = Modifier.padding(start = 440.dp, bottom = 12.dp),
+            )
+            if (homeCardOverlay && homeCardEnabled) {
+                OemRow("Posição do card") {
+                    OemButton(if (homeCardCalibrating) "Medindo…" else "Recalibrar (abre a mídia)",
+                        enabled = !homeCardCalibrating) {
+                        homeCardCalibrating = true
+                        scope.launch {
+                            homeCardCalibMsg = withContext(Dispatchers.IO) { HomeCardOverlay.calibrate(true) }
+                            homeCardCalibrating = false
+                        }
+                    }
+                }
+                if (homeCardCalibMsg.isNotEmpty()) OemNote(homeCardCalibMsg)
             }
 
             OemRow("Faixa de clima") {

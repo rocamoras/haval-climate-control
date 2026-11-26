@@ -135,6 +135,8 @@ object ClimateStateHolder {
 
     @Volatile var onRealOutsideTempToggle: ToggleCallback? = null
     @Volatile var onHomeCardToggle: ToggleCallback? = null
+    /** Desenho do card: true = overlay (sem Frida), false = injecao Frida na MediaCenter. */
+    @Volatile var onHomeCardModeChange: ToggleCallback? = null
     /** Faixa de clima fixa (overlay + overscan). A pref fica em climate_control_prefs,
      *  device-protected, porque é ela que decide a limpeza do overscan no boot travado. */
     @Volatile var onClimateStripToggle: ToggleCallback? = null

@@ -13,6 +13,9 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Faixa de clima fixa: o appop e liberado pelo servico via Shizuku. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Card na Home por overlay: MediaCenter no topo lida pelo UsageStats. Liberado por
+         `appops set <pkg> GET_USAGE_STATS allow` (Shizuku, uma vez; persiste). -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
 
     <application
         android:name="br.com.redesurftank.havalclimatecontrol.App"
